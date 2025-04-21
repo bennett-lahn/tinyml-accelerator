@@ -1,4 +1,5 @@
-`include "sys_types.sv"
+// Don't need to use includes with cocotb, so this is left as reference
+// `include "sys_types.sv"
 
 module tensor_process_elem (
  	input  logic clk						      // System clock
@@ -40,4 +41,3 @@ endmodule
 
 // int8 operand registers (REG) and int32 accumulator registers (ACC)
 // M and N = height/width of PE array
-// Need some way to dynamically disable / bypass parts of the array when only using a small part of it

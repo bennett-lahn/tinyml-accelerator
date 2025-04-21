@@ -1,7 +1,8 @@
-`include "tensor_process_elem.sv"
+// Don't need to use includes with cocotb, so this is left as reference
+// `include "sys_types.sv"
 
 module systolic_tensor_array #(
-    parameter int N = 8,               // Systolic array height/width (NxN PEs)
+    parameter int N = 4,               // Systolic array height/width (NxN PEs)
     parameter int TILE_SIZE = 2,       // Tile size for pipelining across boundaries
     parameter int VECTOR_WIDTH = 4     // How many ops each PE handles at once
 )(
@@ -24,7 +25,7 @@ module systolic_tensor_array #(
     int8_t  B_data_reg  [N-1:0][0:N][VECTOR_WIDTH-1:0];
     int8_t  B_data      [N-1:0][0:N][VECTOR_WIDTH-1:0];
 
-    int32_t psum   [0:N][0:N];
+    int32_t psum        [0:N][0:N];
 
     // Feed in row/col data from edges
     generate
