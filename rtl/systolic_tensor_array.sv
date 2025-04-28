@@ -1,38 +1,44 @@
 `include "sys_types.svh"
 
 module systolic_tensor_array (
-    input  logic clk
-    ,input  logic reset
+    input   logic        clk           // System clock, rising-edge
+    ,input  logic        reset         // Active-high synchronous reset
 
-    ,input int8_t A0 [0:3]
-    ,input int8_t A1 [0:3]
-    ,input int8_t A2 [0:3]
-    ,input int8_t A3 [0:3]
+    // A matrix inputs: one 4-wide int8 vector per row, left inputs
+    ,input  int8_t       A0 [0:3]      // Row 0 of A
+    ,input  int8_t       A1 [0:3]      // Row 1 of A
+    ,input  int8_t       A2 [0:3]      // Row 2 of A
+    ,input  int8_t       A3 [0:3]      // Row 3 of A
 
-    ,input int8_t B0 [0:3]
-    ,input int8_t B1 [0:3]
-    ,input int8_t B2 [0:3]
-    ,input int8_t B3 [0:3]
+    // B matrix inputs: one 4-wide int8 vector per column, top inputs
+    ,input  int8_t       B0 [0:3]      // Column 0 of B
+    ,input  int8_t       B1 [0:3]      // Column 1 of B
+    ,input  int8_t       B2 [0:3]      // Column 2 of B
+    ,input  int8_t       B3 [0:3]      // Column 3 of B
 
-    ,input  logic        load_sum0 [0:3]
-    ,input  logic        load_sum1 [0:3]
-    ,input  logic        load_sum2 [0:3]
-    ,input  logic        load_sum3 [0:3]
+    // Per-PE load_sum: when high, loads the value of accumulator from the row above
+    ,input  logic        load_sum0 [0:3]  // Row 0 load_sum for cols 0..3
+    ,input  logic        load_sum1 [0:3]  // Row 1 load_sum
+    ,input  logic        load_sum2 [0:3]  // Row 2 load_sum
+    ,input  logic        load_sum3 [0:3]  // Row 3 load_sum
 
-    ,input  logic        load_bias0 [0:3]
-    ,input  logic        load_bias1 [0:3]
-    ,input  logic        load_bias2 [0:3]
-    ,input  logic        load_bias3 [0:3]
+    // Per-PE load_bias: when high, accumulator set to corresponding bias value
+    ,input  logic        load_bias0 [0:3] // Row 0 load_bias for cols 0..3
+    ,input  logic        load_bias1 [0:3] // Row 1 load_bias
+    ,input  logic        load_bias2 [0:3] // Row 2 load_bias
+    ,input  logic        load_bias3 [0:3] // Row 3 load_bias
 
-    ,input  int32_t      bias0 [0:3]
-    ,input  int32_t      bias1 [0:3]
-    ,input  int32_t      bias2 [0:3]
-    ,input  int32_t      bias3 [0:3]
+    // Per-PE bias inputs: int32 biases preloaded into accumulator
+    ,input  int32_t      bias0 [0:3]   // Bias for row 0 PEs
+    ,input  int32_t      bias1 [0:3]   // Bias for row 1 PEs
+    ,input  int32_t      bias2 [0:3]   // Bias for row 2 PEs
+    ,input  int32_t      bias3 [0:3]   // Bias for row 3 PEs
 
-    ,output int32_t      C0 [0:3]
-    ,output int32_t      C1 [0:3]
-    ,output int32_t      C2 [0:3]
-    ,output int32_t      C3 [0:3]
+    // Final outputs: one 4-wide int32 vector per row of PEs, accumulator value for each PE
+    ,output int32_t      C0 [0:3]      // Outputs from row 0 PEs
+    ,output int32_t      C1 [0:3]      // Outputs from row 1 PEs
+    ,output int32_t      C2 [0:3]      // Outputs from row 2 PEs
+    ,output int32_t      C3 [0:3]      // Outputs from row 3 PEs
 );
   
     // Systolic array height/width (NxN PEs)
@@ -60,19 +66,10 @@ module systolic_tensor_array (
 
     // Feed in row/col data from edges
     // Consider registering these input values to reduce critical path / ensure STA gets good values
-    always_ff @(posedge clk) begin
-        if (reset) begin
-          A_data[0][0] <= '{default:'0}; B_data[0][0] <= '{default:'0};
-          A_data[1][0] <= '{default:'0}; B_data[0][1] <= '{default:'0};
-          A_data[2][0] <= '{default:'0}; B_data[0][2] <= '{default:'0};
-          A_data[3][0] <= '{default:'0}; B_data[0][3] <= '{default:'0};
-        end else begin
-          A_data[0][0] <= A0;  B_data[0][0] <= B0;
-          A_data[1][0] <= A1;  B_data[0][1] <= B1;
-          A_data[2][0] <= A2;  B_data[0][2] <= B2;
-          A_data[3][0] <= A3;  B_data[0][3] <= B3;
-        end
-    end
+    assign A_data[0][0] = A0;  assign B_data[0][0] = B0;
+    assign A_data[1][0] = A1;  assign B_data[0][1] = B1;
+    assign A_data[2][0] = A2;  assign B_data[0][2] = B2;
+    assign A_data[3][0] = A3;  assign B_data[0][3] = B3;
 
     // Connect processing elements and place intermediate registers
     generate

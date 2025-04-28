@@ -102,7 +102,7 @@ async def test_systolic_tensor_array_fixed(dut):
 
         # 2) MAC
         await apply_inputs(A, B, zeros_sum, zeros_sum, zeros_bias,
-                           do_reset=False, cycles=2)
+                           do_reset=False, cycles=1)
         check_output(f"{label} First cycle", expected)
 
         # 3) Reset
@@ -173,7 +173,7 @@ async def test_systolic_tensor_array_fixed(dut):
     # Verify no change with zero‐MAC
     await apply_inputs(zeros_A, zeros_B,
                        zeros_sum, zeros_bias_ls, bias_only,
-                       do_reset=False, cycles=2)
+                       do_reset=False, cycles=1)
     check_output("Bias + zero‐MAC", bias_only)
 
     # Load bias + one MAC with non‐zero data
@@ -219,40 +219,60 @@ async def test_systolic_tensor_array_fixed(dut):
     zeros_sum  = [[0]*N            for _ in range(N)]
     zeros_bias = [[0]*N            for _ in range(N)]
 
-    # Do a first MAC on a fresh random A/B to get C0
-    A_ps = [[random.randint(-10,10) for _ in range(VECTOR_WIDTH)] for _ in range(N)]
-    B_ps = [[random.randint(-10,10) for _ in range(VECTOR_WIDTH)] for _ in range(N)]
-    # Golden row-0
-    golden0 = [ expected_dot(A_ps[0], B_ps[j]) for j in range(N) ]
-    # Build the full expected matrix after first MAC:
-    # Only row0 is filled; rows 1–3 remain zero
-    expected_first = [ golden0 ] + [[0]*N]*3
+    # First MAC: only column 0 PEs fire
+    A_ps    = [[0 for _ in range(VECTOR_WIDTH)] for _ in range(N)]
+    B_ps    = [[random.randint(-10,10) for _ in range(VECTOR_WIDTH)] for _ in range(N)]
+    A_ps[0] = [random.randint(-10,10) for _ in range(VECTOR_WIDTH)]
+    # Golden for each row i, col=0
+    golden_row0 = [expected_dot(A_ps[0], B_ps[i]) for i in range(N)]
+    # Build expected first‐MAC result: col0 filled, others zero
+    expected_first = [[0]*N for _ in range(N)]
+    for index in range(N):
+        expected_first[0][index] = golden_row0[index]
 
     # Reset + first MAC
     await apply_inputs(A_ps, B_ps, zeros_sum, zeros_bias, zeros_bias,
                        do_reset=True,  cycles=1)
     check_output("PS first reset", [[0]*N for _ in range(N)])
-    await apply_inputs(A_ps, B_ps, zeros_sum, zeros_bias, zeros_bias,
-                       do_reset=False, cycles=2)
+    await apply_inputs(zeros_A, zeros_B, zeros_sum, zeros_bias, zeros_bias,
+                       do_reset=False, cycles=1)
+    # await apply_inputs(zeros_A, zeros_B, zeros_sum, zeros_bias, zeros_bias,
+    #                    do_reset=False,  cycles=1)
     check_output("PS first MAC", expected_first)
 
-    # Load_sum into row1: no new MAC since A/B=0; row1 should pick up row0’s results
-    load_sum_ps = [ row.copy() for row in zeros_sum ]
-    load_sum_ps[1] = [1]*N    # only row 1 asserts load_sum
-
-    await apply_inputs(zeros_A, zeros_B, load_sum_ps, zeros_bias, zeros_bias,
+    # Inject into row 1 (only load_sum[1][*]=1)
+    load_sum_ps = [row.copy() for row in zeros_sum]
+    load_sum_ps[1] = [1]*N
+    await apply_inputs(zeros_A, zeros_B,
+                       load_sum_ps, zeros_bias, zeros_bias,
                        do_reset=False, cycles=2)
-    expected_row1 = [ golden0, golden0, [0]*N, [0]*N ]
-    check_output("PS inject row1", expected_row1)
 
-    # Chain into row2
-    load_sum_ps = [ row.copy() for row in zeros_sum ]
-    load_sum_ps[2] = [1]*N    # only row 2 asserts load_sum
+    # row1 should now equal row0; others unchanged
+    expected_inject1 = [row.copy() for row in expected_first]
+    expected_inject1[1] = expected_first[0]
+    check_output("PS Inject row1", expected_inject1)
 
-    await apply_inputs(zeros_A, zeros_B, load_sum_ps, zeros_bias, zeros_bias,
+    # Inject into row 2
+    load_sum_ps = [row.copy() for row in zeros_sum]
+    load_sum_ps[2] = [1]*N
+    await apply_inputs(zeros_A, zeros_B,
+                       load_sum_ps, zeros_bias, zeros_bias,
                        do_reset=False, cycles=2)
-    expected_row2 = [ golden0, golden0, golden0, [0]*N ]
-    check_output("PS inject row2", expected_row2)
+
+    expected_inject2 = [row.copy() for row in expected_inject1]
+    expected_inject2[2] = expected_first[0]
+    check_output("PS Inject row2", expected_inject2)
+
+    # Inject into row 3
+    load_sum_ps = [row.copy() for row in zeros_sum]
+    load_sum_ps[3] = [1]*N
+    await apply_inputs(zeros_A, zeros_B,
+                       load_sum_ps, zeros_bias, zeros_bias,
+                       do_reset=False, cycles=2)
+
+    expected_inject3 = [row.copy() for row in expected_inject2]
+    expected_inject3[3] = expected_first[0]
+    check_output("PS Inject row3", expected_inject3)
 
     dut._log.info("✅ All partial-sum loading tests passed!")
 
