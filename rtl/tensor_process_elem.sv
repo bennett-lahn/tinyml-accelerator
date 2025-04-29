@@ -7,8 +7,8 @@ module tensor_process_elem (
     ,input  logic reset				  // Reset high signal
     ,input logic load_sum		      // Selects whether the inputted partial sum or internal partial sum should be output to ACC register
     ,input int32_t sum_in		      // Partial sum input from above
-    ,input  int8_t left_in [3:0] 	  // 4 inputs from left, least significant is top input, matrix A
-    ,input  int8_t top_in [3:0]       // 4 inputs from top, least significant is left-most input, matrix B
+    ,input  int8_t left_in [0:3] 	  // 4 inputs from left, least significant is top input, matrix A
+    ,input  int8_t top_in [0:3]       // 4 inputs from top, least significant is left-most input, matrix B
     ,output int32_t sum_out		      // Output from accumulate register
 );
 
