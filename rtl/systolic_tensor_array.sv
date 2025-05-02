@@ -45,8 +45,7 @@ module systolic_tensor_array (
     parameter int N = 4;
 
     // Tile size for pipelining across boundaries; Tried 1=1x4x1, 2=2x4x2, 4=4x4x4 STA tile
-    // 4x4x4 is most area/power efficient for 16x16 STA but least pipelined; chosen for control simplicity
-    parameter int TILE_SIZE = 4;
+    parameter int TILE_SIZE = 1;
 
     // How many ops each PE handles at once
     parameter int VECTOR_WIDTH = 4;  
@@ -148,10 +147,5 @@ module systolic_tensor_array (
     assign C2 = psum[3];
     assign C3 = psum[4];
     /*verilator lint_on UNOPTFLAT*/
-
-    // 🧠 [Future Extension] Fusion control logic
-    // - Use 'mode' signal (Conv2D / DepthwiseConv2D / Bypass)
-    // - Use 'channel_group_id' for grouping parallel DW channels
-    // - Route/replicate A_in/B_in accordingly
 
 endmodule
