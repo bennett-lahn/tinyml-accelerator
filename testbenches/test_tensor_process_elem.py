@@ -5,11 +5,12 @@ from cocotb.clock import Clock
 import random
 
 @cocotb.test()
-async def tensor_process_elem_test(dut):
+async def test_tensor_process_elem(dut):
     """Tensor processing element test with random and edge cases"""
+    CLOCK_PERIOD = 2
     dut._log.setLevel(logging.DEBUG)
     # Start clock
-    cocotb.start_soon(Clock(dut.clk, 2, units="ns").start())
+    cocotb.start_soon(Clock(dut.clk, CLOCK_PERIOD, units="ns").start())
 
     # Advance one clock cycle
     async def tick():

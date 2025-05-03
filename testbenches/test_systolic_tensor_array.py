@@ -7,7 +7,7 @@ N            = 4
 VECTOR_WIDTH = 4
 
 @cocotb.test()
-async def test_systolic_tensor_array_fixed(dut):
+async def test_systolic_tensor_array(dut):
     """Test the fixed-size 4×4 STA using 1-D unpacked ports."""
     # Start the clock
     cocotb.start_soon(Clock(dut.clk, 2, units="ns").start())

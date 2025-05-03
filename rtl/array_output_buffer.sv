@@ -1,22 +1,24 @@
+`include "sys_types.svh"
+
 module array_output_buffer #(
   parameter int MAX_N  = 16,
   parameter int N_BITS = $clog2(MAX_N)
 )(
-  input  logic             clk,
-  input  logic             reset,
+  input  logic                    clk
+  ,input  logic                   reset
 
   // 4 parallel write ports
-  input  logic [3:0]             in_valid,
-  input  logic [3:0][31:0]       in_output,
-  input  logic [3:0][N_BITS-1:0] in_row,
-  input  logic [3:0][N_BITS-1:0] in_col,
+  ,input  logic                in_valid  [3:0] // High if input from port is valid
+  ,input  int32_t              in_output [3:0] // Unquantized input value
+  ,input  logic   [N_BITS-1:0] in_row    [3:0] // Row in matrix of data input
+  ,input  logic   [N_BITS-1:0] in_col    [3:0] // Column in matrix of data input
 
   // single read port
-  output logic                   out_valid,
-  output logic [31:0]            out_output,
-  output logic [N_BITS-1:0]      out_row,
-  output logic [N_BITS-1:0]      out_col,
-  input  logic                   out_consume
+  ,output logic                   out_valid    // High if output is valid and should be read
+  ,output int32_t                 out_output   // Unquantized output value
+  ,output logic [N_BITS-1:0]      out_row      // Row in matrix of data output
+  ,output logic [N_BITS-1:0]      out_col      // Column in matrix of data output
+  ,input  logic                   out_consume  // High if connected quantize/activate unit uses output
 );
 
   // A single buffer entry
@@ -29,29 +31,31 @@ module array_output_buffer #(
 
   entry_t            buffer [4];
   logic [1:0]        wr_ptr, rd_ptr;
-  logic [3:0]        write_offset; // one-hot temp to compute offsets
   logic [2:0]        count;
 
   // Combinational: count writes, detect read, compute new pointers & count
-  logic [2:0]        writes;
+  logic [1:0]        writes;
   logic              do_read;
   logic [2:0]        count_new;
   logic [1:0]        wr_ptr_new, rd_ptr_new;
-  logic [3:0]        offset;       // for each port, number of prior valid writes
+  logic [1:0]        acc;
+  logic [1:0]        offset [0:3];       // for each port, number of prior valid writes
 
   always_comb begin
-    writes    = in_valid[0] + in_valid[1] + in_valid[2] + in_valid[3];
+    // If writing from all 4 ports, writes wraps back to 0, this is ok because write pointer doesn't need to move in this case
+    // (I THINK). TODO: Check this in testing
+    writes    = {1'b0, in_valid[0]} + {1'b0, in_valid[1]} + {1'b0, in_valid[2]} + {1'b0, in_valid[3]};
     do_read   = out_consume && buffer[rd_ptr].valid;
     count_new = count + writes - (do_read ? 1 : 0);
     wr_ptr_new = wr_ptr + writes;
     rd_ptr_new = rd_ptr + (do_read ? 1 : 0);
 
     // compute write offsets per port
-    offset = '0;
-    int acc = 0;
+    offset = {'b0, 'b0, 'b0, 'b0};
+    acc = 'b0;
     for (int i = 0; i < 4; i++) begin
       offset[i] = acc;
-      if (in_valid[i]) acc++;
+      if (in_valid[i]) acc = acc + 2'd1;
     end
 
     // overflow check
@@ -73,7 +77,7 @@ module array_output_buffer #(
       // perform all writes
       for (int i = 0; i < 4; i++) begin
         if (in_valid[i] && (count_new <= 4)) begin
-          int idx = wr_ptr + offset[i];
+          logic [1:0] idx = wr_ptr + offset[i];
           buffer[idx].output_val <= in_output[i];
           buffer[idx].row        <= in_row[i];
           buffer[idx].col        <= in_col[i];

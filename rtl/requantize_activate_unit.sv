@@ -1,20 +1,18 @@
 // This module likely needs to be pipelined; multiply+shift+shift+shift is a lot for one cycle
 // but it's fine for now.
 
-// TODO: Modify ROM to return a subset of values for parallel activations
-
 `include "sys_types.svh"
 
 module requantize_activate_unit #(
   // Quantization parameters for the output tensor:
-  parameter integer QMIN       = -128,      // min int8 after ReLU6
-  parameter integer QMAX       = 127        // max int8 after ReLU6
+  parameter integer QMIN       = -128        // min int8 after ReLU6
+  ,parameter integer QMAX       = 127        // max int8 after ReLU6
 )(
-  input int32_t acc,                              // int32 MAC result + bias
-  input int32_t quant_mult,                       // fixed-point multiplier; quant_mult and shift are used to represent the flop scale value as integer
-  input  logic signed [5:0]  shift,         // right‐shift amount (can be negative)
-  input logic choose_zero_point             // output zero‐point; 0 if normal, 1 if special (1 only used for last Conv2D in model)
-  output int8_t  out                               // requantized + ReLU6 output
+  input int32_t acc                          // int32 MAC result + bias
+  ,input int32_t quant_mult                  // fixed-point multiplier; quant_mult and shift are used to represent the flop scale value as integer
+  ,input  logic signed [5:0]  shift          // right‐shift amount (can be negative)
+  ,input logic choose_zero_point             // output zero‐point; 0 if normal, 1 if special (1 only used for last Conv2D in model)
+  ,output int8_t  out                        // requantized + ReLU6 output
 );
 
   localparam int32_t norm_zero_point = -128;

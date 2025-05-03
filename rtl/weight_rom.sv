@@ -42,12 +42,12 @@ module weight_rom #(
 // Arguments:
 //   layer_sizes - Kernel dimensions for each layer
 //   channels    - Input channels for each layer
-function automatic int[] calc_layer_offsets(input int layer_sizes[], input int channels[]);
+function automatic int calc_layer_offsets(input int layer_sizes[], input int channels[]);
     automatic int offsets[NUM_LAYERS];
     automatic int cumulative = 0;
   
     offsets[0] = 0;  // First layer starts at index 0
-    for(int i=1; i<NUM_LAYERS; i++) begin
+    for (int i = 1; i < NUM_LAYERS; i++) begin
         // Cumulative sum of weights from previous layers:
         // (kernel_size²) * channels for layer i-1
         cumulative += layer_sizes[i-1] ** 2 * channels[i-1];
