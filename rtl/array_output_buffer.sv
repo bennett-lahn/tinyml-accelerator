@@ -4,105 +4,230 @@ module array_output_buffer #(
   parameter int MAX_N  = 16,
   parameter int N_BITS = $clog2(MAX_N)
 )(
-  input  logic                    clk
-  ,input  logic                   reset
+  input  logic              clk,
+  input  logic              reset,
 
   // 4 parallel write ports
-  ,input  logic                in_valid  [3:0] // High if input from port is valid
-  ,input  int32_t              in_output [3:0] // Unquantized input value
-  ,input  logic   [N_BITS-1:0] in_row    [3:0] // Row in matrix of data input
-  ,input  logic   [N_BITS-1:0] in_col    [3:0] // Column in matrix of data input
+  input  logic              in_valid  [3:0], // High if input from port is valid
+  input  int32_t            in_output [3:0], // Unquantized input value
+  input  logic [N_BITS-1:0] in_row    [3:0], // Row in matrix of data input
+  input  logic [N_BITS-1:0] in_col    [3:0], // Column in matrix of data input
 
   // single read port
-  ,output logic                   out_valid    // High if output is valid and should be read
-  ,output int32_t                 out_output   // Unquantized output value
-  ,output logic [N_BITS-1:0]      out_row      // Row in matrix of data output
-  ,output logic [N_BITS-1:0]      out_col      // Column in matrix of data output
-  ,input  logic                   out_consume  // High if connected quantize/activate unit uses output
+  output logic              out_valid,       // High if output is valid and should be read
+  output int32_t            out_output,      // Unquantized output value
+  output logic [N_BITS-1:0] out_row,         // Row in matrix of data output
+  output logic [N_BITS-1:0] out_col,         // Column in matrix of data output
+  input  logic              out_consume      // High if connected quantize/activate unit uses output
 );
+
+  // Local parameters for buffer configuration
+  localparam int NUM_WRITE_PORTS    = 4;
+  localparam int MAX_BUFFER_ENTRIES = 4;
+  localparam int PTR_BITS           = $clog2(MAX_BUFFER_ENTRIES);       // For wr_ptr, rd_ptr (0 to 3) -> 2 bits
+  localparam int COUNT_BITS         = $clog2(MAX_BUFFER_ENTRIES + 1);   // For count (0 to 4) -> 3 bits
 
   // A single buffer entry
   typedef struct packed {
-    logic [31:0]       output_val;
+    int32_t            output_val;
     logic [N_BITS-1:0] row;
     logic [N_BITS-1:0] col;
     logic              valid;
   } entry_t;
 
-  entry_t            buffer [4];
-  logic [1:0]        wr_ptr, rd_ptr;
-  logic [2:0]        count;
+  // Buffer memory and state registers
+  entry_t                buffer [MAX_BUFFER_ENTRIES];
+  logic [PTR_BITS-1:0]   wr_ptr, rd_ptr;
+  logic [COUNT_BITS-1:0] count;
 
-  // Combinational: count writes, detect read, compute new pointers & count
-  logic [1:0]        writes;
-  logic              do_read;
-  logic [2:0]        count_new;
-  logic [1:0]        wr_ptr_new, rd_ptr_new;
-  logic [1:0]        acc;
-  logic [1:0]        offset [0:3];       // for each port, number of prior valid writes
+  // Combinational logic signals
+  logic is_bypassing;                              // True if an input is bypassing the buffer
+  logic [PTR_BITS-1:0] bypass_input_idx;           // Index of the input chosen for bypass
+  int32_t bypass_data_output;                      // Data for bypass output
+  logic [N_BITS-1:0] bypass_data_row;              // Row for bypass output
+  logic [N_BITS-1:0] bypass_data_col;              // Col for bypass output
+
+  logic [COUNT_BITS-1:0] writes_total_count;       // How many in_valid signals are high
+  logic actual_read_from_buffer;                   // True if consuming an entry from the buffer memory
+  logic [COUNT_BITS-1:0] writes_to_buffer_count;   // How many write operations will target the buffer memory
+
+  logic [COUNT_BITS-1:0] count_next_proposed;      // Proposed value for count for the next cycle (before saturation)
+  logic [PTR_BITS-1:0]   wr_ptr_next, rd_ptr_next; // Proposed values for pointers
+
+  // For each input port, its target slot offset relative to wr_ptr if it's written to the buffer
+  logic [PTR_BITS-1:0]   write_slot_offset [0:NUM_WRITE_PORTS-1];
 
   always_comb begin
-    // If writing from all 4 ports, writes wraps back to 0, this is ok because write pointer doesn't need to move in this case
-    // (I THINK). TODO: Check this in testing
-    writes    = {1'b0, in_valid[0]} + {1'b0, in_valid[1]} + {1'b0, in_valid[2]} + {1'b0, in_valid[3]};
-    do_read   = out_consume && buffer[rd_ptr].valid;
-    count_new = count + writes - (do_read ? 1 : 0);
-    wr_ptr_new = wr_ptr + writes;
-    rd_ptr_new = rd_ptr + (do_read ? 1 : 0);
+    // Initialize default values for combinational signals
+    writes_total_count = '0; // Initialize to 0, width is COUNT_BITS
+    is_bypassing = 1'b0;
+    bypass_input_idx = 'x; 
+    bypass_data_output = 'x;
+    bypass_data_row = 'x;
+    bypass_data_col = 'x;
+    actual_read_from_buffer = 1'b0;
+    writes_to_buffer_count = '0;
+    count_next_proposed = 'x;
+    wr_ptr_next = wr_ptr; // Default to current if no change
+    rd_ptr_next = rd_ptr; // Default to current if no change
+    for(int i=0; i<NUM_WRITE_PORTS; i++) write_slot_offset[i] = '0;
 
-    // compute write offsets per port
-    offset = {'b0, 'b0, 'b0, 'b0};
-    acc = 'b0;
-    for (int i = 0; i < 4; i++) begin
-      offset[i] = acc;
-      if (in_valid[i]) acc = acc + 2'd1;
+    // 1. Calculate total number of incoming valid writes
+    for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+      if (in_valid[i]) begin
+        writes_total_count = writes_total_count + 1;
+      end
     end
 
-    // overflow check
-    if (count_new > 4) begin
-      $display("ERROR: Buffer overflow at time %0t! count=%0d, writes=%0d, reads=%0d", 
-               $time, count, writes, do_read ? 1 : 0);
+    // 2. Determine bypass logic:
+    // Bypass occurs if: consumer wants data (out_consume), buffer is empty (count == 0),
+    // AND there is at least one valid input (writes_total_count > 0).
+    if (out_consume && (count == 0) && (writes_total_count > 0)) begin
+      is_bypassing = 1'b1;
+      // Select the first valid input port for bypass (priority: port 0 > 1 > 2 > 3)
+      for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+        if (in_valid[i]) begin
+          bypass_input_idx   = i[PTR_BITS-1:0]; 
+          bypass_data_output = in_output[i];
+          bypass_data_row    = in_row[i];
+          bypass_data_col    = in_col[i];
+          break;
+        end
+      end
     end
-  end
 
-  // Sequential: update buffer, pointers, and count
+    // 3. Determine if an actual read from the buffer memory will occur
+    actual_read_from_buffer = out_consume & ~is_bypassing;
+
+    // 4. Calculate how many writes will actually go into the buffer memory
+    if (is_bypassing) begin
+      writes_to_buffer_count = (writes_total_count > 0) ? (writes_total_count - 1) : COUNT_BITS'(0);
+    end else begin
+      writes_to_buffer_count = writes_total_count;
+    end
+    
+    // 5. Calculate proposed next state for count, write pointer, and read pointer
+    count_next_proposed = count + writes_to_buffer_count - {{(COUNT_BITS-1){1'b0}}, actual_read_from_buffer};
+    
+    wr_ptr_next = wr_ptr + writes_to_buffer_count; // Pointer advances by # items buffered; wraps
+    rd_ptr_next = rd_ptr + actual_read_from_buffer; // Pointer advances if read; wraps
+
+    // 6. Compute write slot offsets for inputs that are actually written to the buffer
+    logic [PTR_BITS-1:0] current_buffer_write_slot_idx = 0;
+    for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+      if (in_valid[i]) begin
+        if ((is_bypassing && !(i == bypass_input_idx)) || !is_bypassing) begin // Ignore bypassed inputs
+          write_slot_offset[i] = current_buffer_write_slot_idx;
+          current_buffer_write_slot_idx = current_buffer_write_slot_idx + 1;
+        end
+      end
+    end
+
+    // 7. Overflow/Underflow Check and Reporting for debugging
+    logic signed [COUNT_BITS:0] temp_calculated_next_count; // One bit wider, and signed
+    temp_calculated_next_count = count + writes_to_buffer_count;
+    if (actual_read_from_buffer) begin // Subtract read if it happened
+        temp_calculated_next_count = temp_calculated_next_count - 1;
+    end
+
+    if (temp_calculated_next_count > MAX_BUFFER_ENTRIES) begin
+      if (!reset) // Avoid messages during reset
+        $display("ERROR: Buffer overflow condition at time %0t! current_count=%d, writes_to_buffer=%d, read_from_buffer=%b, proposed_raw_next_count=%d",
+                 $time, count, writes_to_buffer_count, actual_read_from_buffer, temp_calculated_next_count);
+    end
+    if (temp_calculated_next_count < 0) begin
+       if (!reset) // Avoid messages during reset
+        $display("WARNING: Buffer underflow condition at time %0t! current_count=%d, writes_to_buffer=%d, read_from_buffer=%b, proposed_raw_next_count=%d",
+                 $time, count, writes_to_buffer_count, actual_read_from_buffer, temp_calculated_next_count);
+    end
+
+  end  // always_comb
+
   always_ff @(posedge clk) begin
     if (reset) begin
-      count   <= 0;
-      wr_ptr  <= 0;
-      rd_ptr  <= 0;
-      for (int i = 0; i < 4; i++)
-        buffer[i].valid <= 1'b0;
+      count  <= '0;
+      wr_ptr <= '0;
+      rd_ptr <= '0;
+      for (int i = 0; i < MAX_BUFFER_ENTRIES; i++) begin
+        buffer[i].valid <= 1'b0; // Invalidate all buffer entries
+      end
     end else begin
-      // perform all writes
-      for (int i = 0; i < 4; i++) begin
-        if (in_valid[i] && (count_new <= 4)) begin
-          logic [1:0] idx = wr_ptr + offset[i];
-          buffer[idx].output_val <= in_output[i];
-          buffer[idx].row        <= in_row[i];
-          buffer[idx].col        <= in_col[i];
-          buffer[idx].valid      <= 1'b1;
+      // Perform writes to the buffer for non-bypassed inputs
+      // These writes occur based on the combinational logic's decisions from the current cycle.
+      for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
+        if (in_valid[i]) begin
+          // Check if this input is the one being bypassed
+          if (!(is_bypassing && (i == bypass_input_idx))) begin
+            // This input is NOT bypassed, so write it to the buffer at the calculated slot.
+            // The overflow condition is reported by the combinational block.
+            // The count register will saturate, effectively handling full buffer.
+            buffer[wr_ptr + write_slot_offset[i]].output_val <= in_output[i];
+            buffer[wr_ptr + write_slot_offset[i]].row        <= in_row[i];
+            buffer[wr_ptr + write_slot_offset[i]].col        <= in_col[i];
+            buffer[wr_ptr + write_slot_offset[i]].valid      <= 1'b1;
+          end
         end
       end
 
-      // perform read (invalidate oldest)
-      if (do_read) begin
-        buffer[rd_ptr].valid <= 1'b0;
+      // Perform read (invalidate oldest entry) if an actual read from buffer happened
+      if (actual_read_from_buffer) begin
+        buffer[rd_ptr].valid <= 1'b0; // Invalidate the entry that was read
       end
 
-      // update pointers & count
-      count  <= count_new;
-      wr_ptr <= wr_ptr_new;
-      rd_ptr <= rd_ptr_new;
+      // Update pointers and count (with saturation for count)
+      // Use a signed temporary variable for calculation to correctly handle potential negative results before saturation.
+      logic signed [COUNT_BITS:0] temp_next_count_signed;
+      temp_next_count_signed = count; // Start with current count
+      temp_next_count_signed = temp_next_count_signed + writes_to_buffer_count; // Add effective writes
+      if (actual_read_from_buffer) begin // Subtract effective read
+          temp_next_count_signed = temp_next_count_signed - 1;
+      end
+      
+      // Saturate count
+      if (temp_next_count_signed > MAX_BUFFER_ENTRIES) begin
+        count <= MAX_BUFFER_ENTRIES;
+      end else if (temp_next_count_signed < 0) begin
+        count <= COUNT_BITS'(0); // Should not happen if actual_read_from_buffer implies count > 0
+      end else begin
+        count <= temp_next_count_signed[COUNT_BITS-1:0]; // Assign validated count
+      end
+      
+      wr_ptr <= wr_ptr_next; // Update write pointer
+      rd_ptr <= rd_ptr_next; // Update read pointer
     end
-  end
+  end // always_ff
 
-  // Output logic: always show the oldest valid entry if any
+  // Debug display FF (similar to original, but with more context)
+  always_ff @(posedge clk) begin
+    if (!reset) begin
+        // Display current state and key combinational decisions that led to the *next* state update
+        // This provides a snapshot at the end of the cycle, reflecting inputs and decisions for that cycle.
+        $display("Time: %0t, Cycle End State: count=%d, wr_ptr=%h, rd_ptr=%h. Inputs: out_consume=%b",
+                 $time, count, wr_ptr, rd_ptr, out_consume);
+        for (int i=0; i<NUM_WRITE_PORTS; i++) begin
+            if(in_valid[i]) $display("  InPort[%d]: valid, data_val=%x, row=%d, col=%d", i, in_output[i], in_row[i], in_col[i]);
+        end
+        $display("  Comb Decisions: is_bypassing=%b, bypass_idx=%h (if bypassing), writes_total=%d, writes_to_buffer=%d, read_from_buffer=%b",
+                 is_bypassing, bypass_input_idx, writes_total_count, writes_to_buffer_count, actual_read_from_buffer);
+        $display("  Comb Next Ptrs/Count (proposed): count_next_prop=%d, wr_ptr_next=%h, rd_ptr_next=%h",
+                 count_next_proposed, wr_ptr_next, rd_ptr_next);
+    end
+  end // always_ff
+
+  // Output MUX: Selects bypass data or buffer data
   always_comb begin
-    out_valid  = buffer[rd_ptr].valid;
-    out_output = buffer[rd_ptr].output_val;
-    out_row    = buffer[rd_ptr].row;
-    out_col    = buffer[rd_ptr].col;
-  end
+    if (is_bypassing) begin
+      out_valid  = 1'b1; // Data is validly bypassed
+      out_output = bypass_data_output;
+      out_row    = bypass_data_row;
+      out_col    = bypass_data_col;
+    end else begin
+      // Standard output from buffer's read pointer
+      out_valid  = buffer[rd_ptr].valid; // This implies count > 0 if this valid is high
+      out_output = buffer[rd_ptr].output_val;
+      out_row    = buffer[rd_ptr].row;
+      out_col    = buffer[rd_ptr].col;
+    end
+  end // always_comb
 
 endmodule
