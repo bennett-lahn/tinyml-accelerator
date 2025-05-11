@@ -67,7 +67,7 @@ async def test_array_output_buffer(dut):
         """Advance one clock."""
         await RisingEdge(dut.clk)
 
-    dut._log.setLevel(logging.INFO) # Set to DEBUG for more verbose output from random test
+    dut._log.setLevel(logging.INFO)
     CLOCK_PERIOD = 2  # ns
 
     # Start the clock
@@ -128,9 +128,8 @@ async def test_array_output_buffer(dut):
     vals2 = [11, 22, 33, 44]
     rows2 = [4, 5, 6, 7]
     cols2 = [7, 6, 5, 4]
-    drive_writes([1,1,1,1], vals2, rows2, cols2) # Fill the buffer
-    await tick() # Data written
-    # De-assert write inputs
+    drive_writes([1,1,1,1], vals2, rows2, cols2)
+    await tick()
     drive_writes([0,0,0,0], [0,0,0,0], [0,0,0,0], [0,0,0,0])
     expected = list(zip(vals2, rows2, cols2))
     while expected:
@@ -140,12 +139,10 @@ async def test_array_output_buffer(dut):
     # Test 4: simultaneous write + read when empty (tests bypass)
     dut._log.info("🚀 Test 4: simultaneous write + read when empty (bypass test)")
     new_val, new_row, new_col = 999, 8, 9
-    # Setup write inputs
     drive_writes([1,0,0,0], [new_val,0,0,0], [new_row,0,0,0], [new_col,0,0,0])
     expected = [(new_val, new_row, new_col)] # Expect this to be bypassed
     # checker_cycle will set out_consume=1, then tick. DUT sees write and consume.
     await checker_cycle()
-    # De-assert write inputs
     drive_writes(
         valids  = [0,0,0,0],
         outputs = [0,0,0,0],
@@ -155,10 +152,10 @@ async def test_array_output_buffer(dut):
     dut._log.info("✅ Simultaneous write+read when empty (bypass test) PASSED")
 
     # Test 5: Randomized operations
-    dut._log.info("🚀 Test 5: Randomized operations")
-    dut._log.setLevel(logging.DEBUG) # More verbose for this test
+    dut._log.info("🚀 Test 5: 1000 randomized operations")
+    # dut._log.setLevel(logging.DEBUG) # Uncomment for more verbose random output
 
-    num_random_ops = 100 
+    num_random_ops = 1000 
     MAX_BUFFER_ENTRIES_TB = 4 
     NUM_WRITE_PORTS_TB = 4    
     
@@ -174,8 +171,6 @@ async def test_array_output_buffer(dut):
     max_row_col_val = (1 << n_bits_val) - 1
     if max_row_col_val < 0: max_row_col_val = 0 # handles N_BITS = 0 case (e.g. if MAX_N=1)
 
-
-    # Ensure all writes are off initially for this test section
     drive_writes([0]*NUM_WRITE_PORTS_TB, [0]*NUM_WRITE_PORTS_TB, [0]*NUM_WRITE_PORTS_TB, [0]*NUM_WRITE_PORTS_TB)
     dut.out_consume.value = 0
 
@@ -200,7 +195,7 @@ async def test_array_output_buffer(dut):
                 
                 for port_idx in ports_to_activate:
                     current_valids[port_idx] = 1
-                    val = random.randint(0, 10000)
+                    val = random.randint(0, 10000000)
                     row = random.randint(0, max_row_col_val)
                     col = random.randint(0, max_row_col_val)
                     current_outputs[port_idx] = val

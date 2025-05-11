@@ -1,8 +1,9 @@
-// This module likely needs to be pipelined; multiply+shift+shift+shift is a lot for one cycle
-// but it's fine for now.
-
 `include "sys_types.svh"
 
+// This module does not perfectly implement TFlite's requantization algorithm, but a more hardware friendly adaptation
+// May will result in minor errors that can be compensated for with quantization aware training (or ignored)
+// This module likely needs to be pipelined; multiply+shift+shift+shift is a lot for one cycle
+// but it's fine for now.
 module requantize_activate_unit #(
   // Quantization parameters for the output tensor:
   parameter integer QMIN       = -128        // min int8 after ReLU6
@@ -23,9 +24,7 @@ module requantize_activate_unit #(
   // - Rounds to nearest with a 64→32 bit shift (adds 1<<30 then >>>31).
   // - Applies a further signed shift (shift) to match the combined scale ratio
   // - from TFLite's quantization parameters
-
-  // TODO: Verify this matches TFlite's formula
-  function int32_t MultiplyByQuantizedMultiplier(int32_t val, int32_t multiplier, logic signed [5:0] shift);
+  function int32_t MultiplyByQuantizedMultiplier(int32_t val, int32_t multiplier, logic signed [5:0] quant_shift);
     logic signed [63:0] prod;
     logic signed [63:0] rounded;
     int32_t tmp;
@@ -35,12 +34,12 @@ module requantize_activate_unit #(
       // 2) Round to nearest, tie to +∞: add 1<<30 before top-bit shift
       rounded = prod + (64'sd1 << 30);
       // 3) Shift down by 31 to align with Q31 format
-      tmp = rounded >>> 31;
+      tmp = int32_t'(rounded >>> 31);
       // 4) Apply additional right/left shift
-      if (shift > 0)
-        MultiplyByQuantizedMultiplier = tmp >>> shift;
+      if (quant_shift > 0)
+        MultiplyByQuantizedMultiplier = tmp >>> quant_shift;
       else
-        MultiplyByQuantizedMultiplier = tmp <<< -shift;
+        MultiplyByQuantizedMultiplier = tmp <<< -quant_shift;
     end
   endfunction
 
@@ -52,10 +51,10 @@ module requantize_activate_unit #(
     // Requantize accumulator
     scaled = MultiplyByQuantizedMultiplier(acc, quant_mult, shift);
     // Add output zero-point
-    with_zp = scaled + (choose_zero_point) ? special_zero_point : norm_zero_point;
+    with_zp = scaled + ((choose_zero_point) ? special_zero_point : norm_zero_point);
     // Clamp to [QMIN, QMAX] (implements quantized ReLU6)
-    if      (with_zp < QMIN) clamped = QMIN;
-    else if (with_zp > QMAX) clamped = QMAX;
+    if      (with_zp < QMIN) clamped = int8_t'(QMIN);
+    else if (with_zp > QMAX) clamped = int8_t'(QMAX);
     else                      clamped = with_zp[7:0];
     out = clamped;
   end
