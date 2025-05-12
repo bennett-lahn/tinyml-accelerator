@@ -1,11 +1,10 @@
-// Don't need to use includes with cocotb, so this is left as reference
-// `include "sys_types.sv"
 `include "sys_types.svh"
 
 module tensor_process_elem (
  	input  logic clk				  // System clock
     ,input  logic reset				  // Reset high signal
-    ,input logic load_sum		      // Selects whether the inputted partial sum or internal partial sum should be output to ACC register
+    ,input logic load_sum             // Selects whether the inputted partial sum or internal partial sum should be output to ACC register
+    ,input  logic stall               // Freezes computation to current value (load_sum overrides)
     ,input int32_t sum_in		      // Partial sum input from above
     ,input  int8_t left_in [0:3] 	  // 4 inputs from left, least significant is top input, matrix A
     ,input  int8_t top_in [0:3]       // 4 inputs from top, least significant is left-most input, matrix B
@@ -23,18 +22,16 @@ module tensor_process_elem (
     assign sum = accumulator + int32_t'(mult0) + int32_t'(mult1) + int32_t'(mult2) + int32_t'(mult3);
 
     // Sequential logic for registering inputs
+    // Precedence for accumulator value is reset -> load_sum -> stall -> MAC calculation
     always_ff @(posedge clk) begin
     	if (reset) begin
     		accumulator <= 'b0;
     	end else begin
-    		accumulator <= (load_sum) ? sum_in : sum;
-    	end
+            accumulator <= (load_sum) ? sum_in : (stall) ? accumulator : sum;
+        end
     end
 
     // Output assignment
     assign sum_out = accumulator;
 
 endmodule 
-
-// int8 operand registers (REG) and int32 accumulator registers (ACC)
-// M and N = height/width of PE array

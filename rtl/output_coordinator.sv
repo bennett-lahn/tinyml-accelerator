@@ -1,92 +1,97 @@
+`include "sys_types.svh"
+
 module output_coordinator #(
-  parameter int ROWS    = 4,                  // # of PE rows
-  parameter int COLS    = 4,                  // # of PE columns
-  parameter int MAX_N   = 16,                 // max matrix dimension
-  parameter int N_BITS  = $clog2(MAX_N+1),    // bits to hold mat_size & coords
+  parameter int ROWS    = 4                 // # of PE rows
+  ,parameter int COLS    = 4                // # of PE columns
+  ,parameter int MAX_N   = 16               // max matrix dimension
+  ,parameter int N_BITS  = $clog2(MAX_N+1)  // bits to hold mat_size & coords
   // worst-case delay = (ROWS-1)+(COLS-1)+ceil(MAX_N/4)
-  parameter int CT_BITS = $clog2((ROWS-1)+(COLS-1)+((MAX_N+3)/4)+1)
+  ,parameter int CT_BITS = $clog2((ROWS-1)+(COLS-1)+((MAX_N+3)/4)+1)
 )(
-  input  logic               clk
+  input  logic              clk
   ,input  logic              reset
   ,input  logic [N_BITS-1:0] mat_size       // N = 3…MAX_N; Used to calculate number of compute cycles
-  ,input  logic              input_valid    // Inject new value at PE[0,0] of
+  ,input  logic              input_valid    // Inject new value at PE[0,0]
+  ,input  logic              stall
   ,input  logic [N_BITS-1:0] pos_row        // block’s base row
   ,input  logic [N_BITS-1:0] pos_col        // block’s base col
 
-  ,output logic              out_valid [0:ROWS-1][0:COLS-1]
-  ,output logic [N_BITS-1:0] out_row   [0:ROWS-1][0:COLS-1]
-  ,output logic [N_BITS-1:0] out_col   [0:ROWS-1][0:COLS-1] // TODO: Rewrite module outputs to support cocotb (no packed multi-dimensional arrays)
+  ,output logic              out_valid [0:ROWS*COLS-1]
+  ,output logic [N_BITS-1:0] out_row   [0:ROWS*COLS-1]
+  ,output logic [N_BITS-1:0] out_col   [0:ROWS*COLS-1]
 );
 
-  // Number of cycles per PE to finish MACs, equivalent to ceil(mat_size/4)
-  wire [CT_BITS-1:0] compute_cycles = (mat_size + 3) >> 2;
+  // Inject new block only into PE(0,0)
+  // PE(0,0) corresponds to flat index 0
+  localparam int PE00_FLAT_IDX = 0 * COLS + 0;
+  localparam int TOTAL_PES = ROWS * COLS;
 
-  // per-PE state
-  logic [CT_BITS-1:0] initial_cnt [0:ROWS-1][0:COLS-1];
-  logic [CT_BITS-1:0] curr_cnt    [0:ROWS-1][0:COLS-1];
-  logic               active      [0:ROWS-1][0:COLS-1];
-  logic [N_BITS-1:0]  base_row    [0:ROWS-1][0:COLS-1];
-  logic [N_BITS-1:0]  base_col    [0:ROWS-1][0:COLS-1];
+  // Number of cycles per PE to finish MACs, equivalent to ceil(mat_size/4)
+  logic [CT_BITS-1:0] compute_cycles;
+  assign compute_cycles = CT_BITS'((mat_size + CT_BITS'(3)) >> 2); // Integer division for ceil
+
+  logic [CT_BITS-1:0] initial_cnt [0:TOTAL_PES-1];
+  logic [CT_BITS-1:0] curr_cnt    [0:TOTAL_PES-1];
+  logic               active      [0:TOTAL_PES-1];
+  logic [N_BITS-1:0]  base_row    [0:TOTAL_PES-1];
+  logic [N_BITS-1:0]  base_col    [0:TOTAL_PES-1];
 
   always_ff @(posedge clk) begin
     if (reset) begin
-      // Clear all PEs
-      for (int i = 0; i < ROWS; i++) begin
-        for (int j = 0; j < COLS; j++) begin
-          initial_cnt[i][j] <= '0;
-          curr_cnt   [i][j] <= '0;
-          active     [i][j] <= 1'b0;
-          base_row   [i][j] <= '0;
-          base_col   [i][j] <= '0;
-        end
+      for (int k = 0; k < TOTAL_PES; k++) begin
+        initial_cnt[k] <= '0;
+        curr_cnt   [k] <= '0;
+        active     [k] <= 1'b0;
+        base_row   [k] <= '0;
+        base_col   [k] <= '0;
       end
     end else begin
-
       // Countdown and retire each PE
-      for (int i = 0; i < ROWS; i++) begin
-        for (int j = 0; j < COLS; j++) begin
-          if (active[i][j]) begin
-            if (curr_cnt[i][j] != 0) begin
-              curr_cnt[i][j] <= curr_cnt[i][j] - 1;
-            end else begin
-              // finished this cycle → clear next
-              active[i][j] <= 1'b0;
-            end
+      for (int k = 0; k < TOTAL_PES; k++) begin
+        if (active[k]) begin
+          if (curr_cnt[k] != 'b0) begin
+            curr_cnt[k] <= curr_cnt[k] - 1;
+          end else begin
+            // finished this cycle → clear active state for the next cycle
+            active[k] <= 1'b0;
           end
         end
       end
 
-      // Inject new block only into PE(0,0)
       if (input_valid) begin
-        initial_cnt [0][0] <= compute_cycles;
-        curr_cnt    [0][0] <= compute_cycles - 1;
-        active      [0][0] <= 1'b1;
-        base_row    [0][0] <= pos_row;
-        base_col    [0][0] <= pos_col;
+        initial_cnt [PE00_FLAT_IDX] <= compute_cycles;
+        curr_cnt    [PE00_FLAT_IDX] <= compute_cycles - 1; // curr_cnt is 0 on the last cycle
+        active      [PE00_FLAT_IDX] <= 1'b1;
+        base_row    [PE00_FLAT_IDX] <= pos_row;
+        base_col    [PE00_FLAT_IDX] <= pos_col;
       end
 
       // Propagate down column 0 from above neighbor
       for (int i = 1; i < ROWS; i++) begin
-        // when PE(i-1,0) has just started (curr==initial)
-        if (active[i-1][0] && (curr_cnt[i-1][0] == initial_cnt[i-1][0] - 1)) begin
-          initial_cnt [i][0] <= initial_cnt[i-1][0];
-          curr_cnt    [i][0] <= initial_cnt[i-1][0] - 1;
-          active      [i][0] <= 1'b1;
-          base_row    [i][0] <= base_row[i-1][0];
-          base_col    [i][0] <= base_col[i-1][0];
+        int flat_idx_curr_pe   = i * COLS + 0;
+        int flat_idx_above_pe = (i-1) * COLS + 0;
+        // when PE(i-1,0) has just started (curr_cnt was set to initial_cnt - 1 in the previous cycle)
+        if (active[flat_idx_above_pe] && (curr_cnt[flat_idx_above_pe] == initial_cnt[flat_idx_above_pe] - 1'b1)) begin
+          initial_cnt [flat_idx_curr_pe] <= initial_cnt[flat_idx_above_pe];
+          curr_cnt    [flat_idx_curr_pe] <= initial_cnt[flat_idx_above_pe] - 1'b1;
+          active      [flat_idx_curr_pe] <= 1'b1;
+          base_row    [flat_idx_curr_pe] <= base_row[flat_idx_above_pe];
+          base_col    [flat_idx_curr_pe] <= base_col[flat_idx_above_pe];
         end
       end
 
       // Propagate right in each row from left neighbor
       for (int i = 0; i < ROWS; i++) begin
         for (int j = 1; j < COLS; j++) begin
+          int flat_idx_curr_pe = i * COLS + j;
+          int flat_idx_left_pe = i * COLS + (j-1);
           // when PE(i,j-1) has just started
-          if (active[i][j-1] && (curr_cnt[i][j-1] == initial_cnt[i][j-1] - 1)) begin;
-            initial_cnt [i][j] <= initial_cnt[i][j-1];
-            curr_cnt    [i][j] <= initial_cnt[i][j-1] - 1;
-            active      [i][j] <= 1'b1;
-            base_row    [i][j] <= base_row[i][j-1];
-            base_col    [i][j] <= base_col[i][j-1];
+          if (active[flat_idx_left_pe] && (curr_cnt[flat_idx_left_pe] == initial_cnt[flat_idx_left_pe] - 1'b1)) begin
+            initial_cnt [flat_idx_curr_pe] <= initial_cnt[flat_idx_left_pe];
+            curr_cnt    [flat_idx_curr_pe] <= initial_cnt[flat_idx_left_pe] - 1'b1;
+            active      [flat_idx_curr_pe] <= 1'b1;
+            base_row    [flat_idx_curr_pe] <= base_row[flat_idx_left_pe];
+            base_col    [flat_idx_curr_pe] <= base_col[flat_idx_left_pe];
           end
         end
       end
@@ -97,20 +102,14 @@ module output_coordinator #(
   always_comb begin
     for (int i = 0; i < ROWS; i++) begin
       for (int j = 0; j < COLS; j++) begin
-        out_valid[i][j] = active[i][j] && (curr_cnt[i][j] == 0);
-        out_row   [i][j] = base_row[i][j] + i;
-        out_col   [i][j] = base_col[i][j] + j;
+        int flat_idx = i * COLS + j;
+        // Output is valid for the cycle where curr_cnt becomes 0
+        out_valid[flat_idx] = active[flat_idx] && (curr_cnt[flat_idx] == '0);
+        // Calculate absolute row/col for the output
+        out_row  [flat_idx] = base_row[flat_idx];
+        out_col  [flat_idx] = base_col[flat_idx];
       end
     end
   end
 
 endmodule
-
-// Memory:
-// Store rows of A (input) for easy reading
-// Store columns of B (weights) for easy reading
-
-// Tiling:
-// I think it is feasible (if not the best idea) to stream all values in for an array larger than 16x16 and calculate the final output in place in PEs
-// AI says this is not feasible and for a larger array (say 512x512) we must tile both MxN and reductions (output dimension) into multiple calcs
-  // AKA every array needs to be split into smaller 16x16 arrays

@@ -3,6 +3,7 @@
 module systolic_tensor_array (
     input   logic        clk           // System clock, rising-edge
     ,input  logic        reset         // Active-high synchronous reset
+    ,input  logic        stall         // Freezes array at current computation when not enough input
 
     // A matrix inputs: one 4-wide int8 vector per row, left inputs
     ,input  int8_t       A0 [0:3]      // Row 0 of A
@@ -54,7 +55,6 @@ module systolic_tensor_array (
     // Meta comments required to avoid UNOPTFLAT warning
     // Veri[lator] doesn't like cascading assignment of A/B_data used in generate
     /*verilator lint_off UNOPTFLAT*/
-    // A_data[row][col][lane], B_data[row][col][lane]
     int8_t A_data [0:N-1][0:N-1][0:VECTOR_WIDTH-1];
     int8_t B_data [0:N-1][0:N-1][0:VECTOR_WIDTH-1];
 
@@ -64,7 +64,6 @@ module systolic_tensor_array (
     assign psum[0] = '{default: 'b0};
 
     // Feed in row/col data from edges
-    // Consider registering these input values to reduce critical path / ensure STA gets good values
     assign A_data[0][0] = A0;  assign B_data[0][0] = B0;
     assign A_data[1][0] = A1;  assign B_data[0][1] = B1;
     assign A_data[2][0] = A2;  assign B_data[0][2] = B2;
@@ -126,15 +125,14 @@ module systolic_tensor_array (
                 assign sum_in_net = (lb) ? b_in : psum[row][col];
                 // Tensor PE: computes 4-dot-product + accumulation
                 tensor_process_elem pe (
-                    .clk(clk),
-                    .reset(reset),
-                    .load_sum(ls | lb),
-                    .sum_in(sum_in_net),
-
-                    .left_in(A_data[row][col]),
-                    .top_in(B_data[row][col]),
-
-                    .sum_out(psum[row+1][col])
+                    .clk(clk)
+                    ,.reset(reset)
+                    ,.load_sum(ls | lb)
+                    ,.stall(stall)
+                    ,.sum_in(sum_in_net)
+                    ,.left_in(A_data[row][col])
+                    ,.top_in(B_data[row][col])
+                    ,.sum_out(psum[row+1][col])
                 );
             end
         end
