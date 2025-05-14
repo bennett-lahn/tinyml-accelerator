@@ -1,6 +1,7 @@
 module tensor_ram #(
-    parameter D_WIDTH = 8,
-    parameter DEPTH = 96*96
+    parameter D_WIDTH = 32, //(4 8 bit pixels per read/write)
+    parameter DEPTH = 96*96,
+    parameter INIT_FILE = ""
 ) (
     input logic clk
     ,input logic we
@@ -11,6 +12,20 @@ module tensor_ram #(
 );
 
     logic [D_WIDTH-1:0] ram [0:DEPTH-1];
+
+
+    initial begin
+        if (INIT_FILE != "") begin // Only initialize if a file is specified (using the new parameter)
+            $display("tensor_ram: Initializing RAM from file: %s", INIT_FILE);
+            $readmemh(INIT_FILE, ram);
+        end else begin
+            //Default initialization if no file is provided, e.g., all zeros
+            for (int i = 0; i < DEPTH; i++) begin
+                ram[i] = {D_WIDTH{1'b0}};
+            end
+            $display("tensor_ram: No INIT_FILE specified, RAM not initialized from file by $readmemh.");
+        end
+    end
 
     always_ff @(posedge clk) begin
         if (we) begin
