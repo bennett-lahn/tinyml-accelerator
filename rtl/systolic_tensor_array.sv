@@ -1,45 +1,45 @@
 `include "sys_types.svh"
 
 module systolic_tensor_array (
-    input   logic        clk           // System clock, rising-edge
-    ,input  logic        reset         // Active-high synchronous reset
-    ,input  logic        stall         // Freezes array at current computation when not enough input
+    input   logic    clk             // System clock, rising-edge
+    ,input  logic    reset           // Active-high synchronous reset
+    ,input  logic    stall           // Freezes array at current computation when not enough input
 
     // A matrix inputs: one 4-wide int8 vector per row, left inputs
-    ,input  int8_t       A0 [0:3]      // Row 0 of A
-    ,input  int8_t       A1 [0:3]      // Row 1 of A
-    ,input  int8_t       A2 [0:3]      // Row 2 of A
-    ,input  int8_t       A3 [0:3]      // Row 3 of A
+    ,input  int8_t   A0 [0:3]        // Row 0 of A
+    ,input  int8_t   A1 [0:3]        // Row 1 of A
+    ,input  int8_t   A2 [0:3]        // Row 2 of A
+    ,input  int8_t   A3 [0:3]        // Row 3 of A
 
     // B matrix inputs: one 4-wide int8 vector per column, top inputs
-    ,input  int8_t       B0 [0:3]      // Column 0 of B
-    ,input  int8_t       B1 [0:3]      // Column 1 of B
-    ,input  int8_t       B2 [0:3]      // Column 2 of B
-    ,input  int8_t       B3 [0:3]      // Column 3 of B
+    ,input  int8_t   B0 [0:3]        // Column 0 of B
+    ,input  int8_t   B1 [0:3]        // Column 1 of B
+    ,input  int8_t   B2 [0:3]        // Column 2 of B
+    ,input  int8_t   B3 [0:3]        // Column 3 of B
 
     // Per-PE load_sum: when high, loads the value of accumulator from the row above
-    ,input  logic        load_sum0 [0:3]  // Row 0 load_sum for cols 0..3
-    ,input  logic        load_sum1 [0:3]  // Row 1 load_sum
-    ,input  logic        load_sum2 [0:3]  // Row 2 load_sum
-    ,input  logic        load_sum3 [0:3]  // Row 3 load_sum
+    ,input  logic   load_sum0 [0:3]  // Row 0 load_sum for cols 0..3
+    ,input  logic   load_sum1 [0:3]  // Row 1 load_sum
+    ,input  logic   load_sum2 [0:3]  // Row 2 load_sum
+    ,input  logic   load_sum3 [0:3]  // Row 3 load_sum
 
     // Per-PE load_bias: when high, accumulator set to corresponding bias value
-    ,input  logic        load_bias0 [0:3] // Row 0 load_bias for cols 0..3
-    ,input  logic        load_bias1 [0:3] // Row 1 load_bias
-    ,input  logic        load_bias2 [0:3] // Row 2 load_bias
-    ,input  logic        load_bias3 [0:3] // Row 3 load_bias
+    ,input  logic   load_bias0 [0:3] // Row 0 load_bias for cols 0..3
+    ,input  logic   load_bias1 [0:3] // Row 1 load_bias
+    ,input  logic   load_bias2 [0:3] // Row 2 load_bias
+    ,input  logic   load_bias3 [0:3] // Row 3 load_bias
 
     // Per-PE bias inputs: int32 biases preloaded into accumulator
-    ,input  int32_t      bias0 [0:3]   // Bias for row 0 PEs
-    ,input  int32_t      bias1 [0:3]   // Bias for row 1 PEs
-    ,input  int32_t      bias2 [0:3]   // Bias for row 2 PEs
-    ,input  int32_t      bias3 [0:3]   // Bias for row 3 PEs
+    ,input  int32_t bias0 [0:3]      // Bias for row 0 PEs
+    ,input  int32_t bias1 [0:3]      // Bias for row 1 PEs
+    ,input  int32_t bias2 [0:3]      // Bias for row 2 PEs
+    ,input  int32_t bias3 [0:3]      // Bias for row 3 PEs
 
     // Final outputs: one 4-wide int32 vector per row of PEs, accumulator value for each PE
-    ,output int32_t      C0 [0:3]      // Outputs from row 0 PEs
-    ,output int32_t      C1 [0:3]      // Outputs from row 1 PEs
-    ,output int32_t      C2 [0:3]      // Outputs from row 2 PEs
-    ,output int32_t      C3 [0:3]      // Outputs from row 3 PEs
+    ,output int32_t C0 [0:3]         // Outputs from row 0 PEs
+    ,output int32_t C1 [0:3]         // Outputs from row 1 PEs
+    ,output int32_t C2 [0:3]         // Outputs from row 2 PEs
+    ,output int32_t C3 [0:3]         // Outputs from row 3 PEs
 );
   
     // Systolic array height/width (NxN PEs)
@@ -71,8 +71,8 @@ module systolic_tensor_array (
 
     // Connect processing elements and place intermediate registers
     generate
-        for (genvar row = 0; row < N; row++) begin: gen_rows
-            for (genvar col = 0; col < N; col++) begin: gen_cols
+        for (genvar row = 0; row < N; row++) begin : gen_rows
+            for (genvar col = 0; col < N; col++) begin : gen_cols
                 localparam row_tile_boundary = (row % TILE_SIZE == 0);
                 localparam col_tile_boundary = (col % TILE_SIZE == 0);
 
@@ -82,6 +82,8 @@ module systolic_tensor_array (
                         always_ff @(posedge clk) begin
                             if (reset)
                                 A_data[row][col] <= '{default: 'b0};
+                            else if (stall)
+                                A_data[row][col] <= A_data[row][col];  
                             else
                                 A_data[row][col] <= A_data[row][col-1];
                         end
@@ -96,6 +98,8 @@ module systolic_tensor_array (
                         always_ff @(posedge clk) begin
                             if (reset)
                                 B_data[row][col] <= '{default: 'b0};
+                            else if (stall)
+                                B_data[row][col] <= B_data[row][col];
                             else
                                 B_data[row][col] <= B_data[row-1][col];
                         end

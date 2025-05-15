@@ -254,7 +254,7 @@ if tflite_int8_weights_for_rom:
                 f_biases.write("# End Tensor\n\n")
             else:
                 print(f"WARNING: Skipping tensor {tensor_name} for hex output due to unhandled dtype: {data_type}")
-
+                
     print(f"\nExtracted TFLite Conv2D kernel weights written to {output_conv_kernels_hex_file}")
     print(f"Total individual hex values (bytes) for Conv2D kernels: {total_conv_kernel_bytes}")
     print(f"\nExtracted TFLite Dense kernel weights written to {output_dense_kernels_hex_file}")
@@ -263,6 +263,65 @@ if tflite_int8_weights_for_rom:
     print(f"Total individual hex values (bytes) for biases: {total_bias_bytes}")
 else:
     print("\nSkipping Step 6: No TFLite weights were successfully extracted in Step 3.")
+
+if tflite_int8_weights_for_rom:
+    # Define new output files for quant params
+    output_conv_scales_file      = "tflite_conv_scales.txt"
+    output_conv_zero_points_file = "tflite_conv_zero_points.txt"
+    output_dense_scales_file     = "tflite_dense_scales.txt"
+    output_dense_zero_points_file= "tflite_dense_zero_points.txt"
+    output_bias_scales_file      = "tflite_bias_scales.txt"
+    output_bias_zero_points_file = "tflite_bias_zero_points.txt"
+
+    # Open all six files
+    with open(output_conv_scales_file,       "w") as f_conv_s, \
+         open(output_conv_zero_points_file,  "w") as f_conv_zp, \
+         open(output_dense_scales_file,      "w") as f_dense_s, \
+         open(output_dense_zero_points_file, "w") as f_dense_zp, \
+         open(output_bias_scales_file,       "w") as f_bias_s, \
+         open(output_bias_zero_points_file,  "w") as f_bias_zp:
+
+        # Write headers
+        f_conv_s.write("# Conv2D kernel quantization scales (per-tensor)\n")
+        f_conv_zp.write("# Conv2D kernel quantization zero points (per-tensor)\n")
+        f_dense_s.write("# Dense kernel quantization scales (per-tensor)\n")
+        f_dense_zp.write("# Dense kernel quantization zero points (per-tensor)\n")
+        f_bias_s.write("# Bias quantization scales (per-tensor)\n")
+        f_bias_zp.write("# Bias quantization zero points (per-tensor)\n")
+
+        # Iterate over the extracted tensors
+        for tensor_name in sorted(tflite_int8_weights_for_rom.keys()):
+            info        = tflite_int8_weights_for_rom[tensor_name]
+            orig_shape  = info['original_shape']
+            scales      = info['scales']
+            zero_points = info['zero_points']
+
+            # Conv2D kernels: 4D int8 tensors with 4×4 spatial dims
+            if info['dtype'] == np.int8 and len(orig_shape) == 4 \
+               and orig_shape[1] == 4 and orig_shape[2] == 4:
+                f_conv_s.write(f"{tensor_name}: {scales.tolist()}\n")
+                f_conv_zp.write(f"{tensor_name}: {zero_points.tolist()}\n")
+
+            # Dense kernels: 2D int8 tensors
+            elif info['dtype'] == np.int8 and len(orig_shape) == 2:
+                f_dense_s.write(f"{tensor_name}: {scales.tolist()}\n")
+                f_dense_zp.write(f"{tensor_name}: {zero_points.tolist()}\n")
+
+            # Biases: int32 tensors
+            elif info['dtype'] == np.int32:
+                f_bias_s.write(f"{tensor_name}: {scales.tolist()}\n")
+                f_bias_zp.write(f"{tensor_name}: {zero_points.tolist()}\n")
+
+    print(f"Quantization scales written to:")
+    print(f"  {output_conv_scales_file}")
+    print(f"  {output_dense_scales_file}")
+    print(f"  {output_bias_scales_file}")
+    print(f"Quantization zero points written to:")
+    print(f"  {output_conv_zero_points_file}")
+    print(f"  {output_dense_zero_points_file}")
+    print(f"  {output_bias_zero_points_file}")
+else:
+    print("Skipping quant param export: no tensors extracted.")
 
 # --- IMPORTANT CONSIDERATIONS FOR YOUR HARDWARE ---
 # (Comments on Weight Order, Bias Handling, Scales, TFLite Converter remain the same)

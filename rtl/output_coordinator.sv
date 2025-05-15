@@ -8,7 +8,7 @@ module output_coordinator #(
   // worst-case delay = (ROWS-1)+(COLS-1)+ceil(MAX_N/4)
   ,parameter int CT_BITS = $clog2((ROWS-1)+(COLS-1)+((MAX_N+3)/4)+1)
 )(
-  input  logic              clk
+  input  logic               clk
   ,input  logic              reset
   ,input  logic [N_BITS-1:0] mat_size       // N = 3…MAX_N; Used to calculate number of compute cycles
   ,input  logic              input_valid    // Inject new value at PE[0,0]
@@ -28,7 +28,7 @@ module output_coordinator #(
 
   // Number of cycles per PE to finish MACs, equivalent to ceil(mat_size/4)
   logic [CT_BITS-1:0] compute_cycles;
-  assign compute_cycles = CT_BITS'((mat_size + CT_BITS'(3)) >> 2); // Integer division for ceil
+  assign compute_cycles = CT_BITS'((mat_size + N_BITS'(3)) >> 2); // Integer division for ceil
 
   logic [CT_BITS-1:0] initial_cnt [0:TOTAL_PES-1];
   logic [CT_BITS-1:0] curr_cnt    [0:TOTAL_PES-1];
@@ -105,9 +105,9 @@ module output_coordinator #(
         int flat_idx = i * COLS + j;
         // Output is valid for the cycle where curr_cnt becomes 0
         out_valid[flat_idx] = active[flat_idx] && (curr_cnt[flat_idx] == '0);
-        // Calculate absolute row/col for the output
-        out_row  [flat_idx] = base_row[flat_idx];
-        out_col  [flat_idx] = base_col[flat_idx];
+        // Calculate absolute row/col for the output using offset from PE(0,0)
+        out_row  [flat_idx] = base_row[flat_idx] + N_BITS'(i);
+        out_col  [flat_idx] = base_col[flat_idx] + N_BITS'(j);
       end
     end
   end
