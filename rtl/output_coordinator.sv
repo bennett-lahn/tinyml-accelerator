@@ -16,9 +16,9 @@ module output_coordinator #(
   ,input  logic [N_BITS-1:0] pos_row        // block’s base row
   ,input  logic [N_BITS-1:0] pos_col        // block’s base col
 
-  ,output logic              out_valid [0:ROWS*COLS-1]
-  ,output logic [N_BITS-1:0] out_row   [0:ROWS*COLS-1]
-  ,output logic [N_BITS-1:0] out_col   [0:ROWS*COLS-1]
+  ,output logic              out_valid [ROWS*COLS]
+  ,output logic [N_BITS-1:0] out_row   [ROWS*COLS]
+  ,output logic [N_BITS-1:0] out_col   [ROWS*COLS]
 );
 
   // Inject new block only into PE(0,0)
@@ -30,11 +30,11 @@ module output_coordinator #(
   logic [CT_BITS-1:0] compute_cycles;
   assign compute_cycles = CT_BITS'((mat_size + N_BITS'(3)) >> 2); // Integer division for ceil
 
-  logic [CT_BITS-1:0] initial_cnt [0:TOTAL_PES-1];
-  logic [CT_BITS-1:0] curr_cnt    [0:TOTAL_PES-1];
-  logic               active      [0:TOTAL_PES-1];
-  logic [N_BITS-1:0]  base_row    [0:TOTAL_PES-1];
-  logic [N_BITS-1:0]  base_col    [0:TOTAL_PES-1];
+  logic [CT_BITS-1:0] initial_cnt [TOTAL_PES];
+  logic [CT_BITS-1:0] curr_cnt    [TOTAL_PES];
+  logic               active      [TOTAL_PES];
+  logic [N_BITS-1:0]  base_row    [TOTAL_PES];
+  logic [N_BITS-1:0]  base_col    [TOTAL_PES];
 
   always_ff @(posedge clk) begin
     if (reset) begin
