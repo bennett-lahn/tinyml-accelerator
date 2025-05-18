@@ -3,18 +3,21 @@
 module output_coordinator #(
   parameter int ROWS    = 4                 // # of PE rows
   ,parameter int COLS    = 4                // # of PE columns
-  ,parameter int MAX_N   = 16               // max matrix dimension
-  ,parameter int N_BITS  = $clog2(MAX_N+1)  // bits to hold mat_size & coords
+  ,parameter int NUM_CH  = 64               // Max channels in any layer
+  ,parameter int CH_BITS = $clog2(NUM_CH+1) // Bits to hold channel number
+  ,parameter int MAX_N   = 512              // Max matrix dimension calculated
+  ,parameter int N_BITS  = $clog2(MAX_N+1)  // Bits to hold mat_size & coords
   // worst-case delay = (ROWS-1)+(COLS-1)+ceil(MAX_N/4)
   ,parameter int CT_BITS = $clog2((ROWS-1)+(COLS-1)+((MAX_N+3)/4)+1)
 )(
-  input  logic               clk
-  ,input  logic              reset
-  ,input  logic [N_BITS-1:0] mat_size       // N = 3…MAX_N; Used to calculate number of compute cycles
-  ,input  logic              input_valid    // Inject new value at PE[0,0]
-  ,input  logic              stall
-  ,input  logic [N_BITS-1:0] pos_row        // block’s base row
-  ,input  logic [N_BITS-1:0] pos_col        // block’s base col
+  input  logic                clk
+  ,input  logic               reset
+  ,input  logic [N_BITS-1:0]  mat_size       // N = 3…MAX_N; Used to calculate number of compute cycles
+  ,input  logic               input_valid    // Inject new value at PE[0,0]
+  ,input  logic               stall
+  ,input  logic [N_BITS-1:0]  pos_row        // Block’s base row
+  ,input  logic [N_BITS-1:0]  pos_col        // Block’s base col
+  ,input  logic [CH_BITS-1:0] channel        // Block's channel
 
   ,output logic              out_valid [ROWS*COLS]
   ,output logic [N_BITS-1:0] out_row   [ROWS*COLS]
@@ -35,6 +38,11 @@ module output_coordinator #(
   logic               active      [TOTAL_PES];
   logic [N_BITS-1:0]  base_row    [TOTAL_PES];
   logic [N_BITS-1:0]  base_col    [TOTAL_PES];
+  logic [CH_BITS-1:0] channels    [TOTAL_PES];
+
+  // Base row and column could be stored in one register currently as the STA only computes one base row/col at a time
+  // In the future, further pipelining of STA could mean that multiple base row/cols are active at a time, meaning each
+  // PE would need its own base row/col register
 
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -44,6 +52,7 @@ module output_coordinator #(
         active     [k] <= 1'b0;
         base_row   [k] <= '0;
         base_col   [k] <= '0;
+        channels   [k] <= '0;
       end
     end else begin
       // Countdown and retire each PE
@@ -64,6 +73,7 @@ module output_coordinator #(
         active      [PE00_FLAT_IDX] <= 1'b1;
         base_row    [PE00_FLAT_IDX] <= pos_row;
         base_col    [PE00_FLAT_IDX] <= pos_col;
+        channels    [PE00_FLAT_IDX] <= channel;
       end
 
       // Propagate down column 0 from above neighbor

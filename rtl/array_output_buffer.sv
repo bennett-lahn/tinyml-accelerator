@@ -1,17 +1,21 @@
 `include "sys_types.svh"
 
 module array_output_buffer #(
-  parameter int MAX_N  = 16,
-  parameter int N_BITS = $clog2(MAX_N)
+  parameter int MAX_N  = 512
+  ,parameter int N_BITS = $clog2(MAX_N)
+  ,parameter int NUM_WRITE_PORTS = 4
+  ,parameter int PTR_BITS = $clog2(MAX_BUFFER_ENTRIES) // For wr_ptr, rd_ptr (0 to 3) -> 2 bits
+  ,parameter int MAX_BUFFER_ENTRIES = 4
+  ,parameter int COUNT_BITS = $clog2(MAX_BUFFER_ENTRIES + 1) // For count (0 to 4) -> 3 bits
 )(
   input  logic               clk
   ,input  logic              reset
 
   // 4 parallel write ports
-  ,input  logic              in_valid  [3:0] // High if input from port is valid
-  ,input  int32_t            in_output [3:0] // Unquantized input value
-  ,input  logic [N_BITS-1:0] in_row    [3:0] // Row in matrix of data input
-  ,input  logic [N_BITS-1:0] in_col    [3:0] // Column in matrix of data input
+  ,input  logic              in_valid  [NUM_WRITE_PORTS] // High if input from port is valid
+  ,input  int32_t            in_output [NUM_WRITE_PORTS] // Unquantized input value
+  ,input  logic [N_BITS-1:0] in_row    [NUM_WRITE_PORTS] // Row in matrix of data input
+  ,input  logic [N_BITS-1:0] in_col    [NUM_WRITE_PORTS] // Column in matrix of data input
 
   // single read port
   ,output logic              out_valid       // High if output is valid and should be read
@@ -20,12 +24,6 @@ module array_output_buffer #(
   ,output logic [N_BITS-1:0] out_col         // Column in matrix of data output
   ,input  logic              out_consume     // High if connected quantize/activate unit uses output
 );
-
-  // Local parameters for buffer configuration
-  localparam int NUM_WRITE_PORTS    = 4;
-  localparam int MAX_BUFFER_ENTRIES = 4;
-  localparam int PTR_BITS           = $clog2(MAX_BUFFER_ENTRIES);       // For wr_ptr, rd_ptr (0 to 3) -> 2 bits
-  localparam int COUNT_BITS         = $clog2(MAX_BUFFER_ENTRIES + 1);   // For count (0 to 4) -> 3 bits
 
   // A single buffer entry
   typedef struct packed {
@@ -55,7 +53,7 @@ module array_output_buffer #(
   logic [PTR_BITS-1:0]   wr_ptr_next, rd_ptr_next; // Proposed values for pointers
 
   logic signed [COUNT_BITS:0] temp_next_count;     // Calculates new buffer count, detect over/underflow
-  logic [PTR_BITS-1:0] curr_buffer_write_offset;      // Assigns written values to correct index offset
+  logic [PTR_BITS-1:0] curr_buffer_write_offset;   // Assigns written values to correct index offset
 
   // For each input port, its target slot offset relative to wr_ptr if it's written to the buffer
   logic [PTR_BITS-1:0]   write_slot_offset [0:NUM_WRITE_PORTS-1];
@@ -73,7 +71,7 @@ module array_output_buffer #(
     count_next_proposed = 'x;
     wr_ptr_next = wr_ptr;
     rd_ptr_next = rd_ptr;
-    for(int i=0; i<NUM_WRITE_PORTS; i++) write_slot_offset[i] = '0;
+    for (int i=0; i<NUM_WRITE_PORTS; i++) write_slot_offset[i] = '0;
 
     // 1. Calculate total number of incoming valid writes
     for (int i = 0; i < NUM_WRITE_PORTS; i++) begin
@@ -112,7 +110,6 @@ module array_output_buffer #(
     // 5. Calculate proposed next state for count, write pointer, and read pointer
     count_next_proposed = count + writes_to_buffer_count - {{(COUNT_BITS-1){1'b0}}, actual_read_from_buffer};
     
-    // TODO: Verify correctness of this cast (if 4/3 items are added to the queue at once, is wr_ptr still correct?)
     wr_ptr_next = PTR_BITS'(wr_ptr + writes_to_buffer_count); // Pointer advances by # items buffered; wraps
     rd_ptr_next = rd_ptr + actual_read_from_buffer; // Pointer advances if read; wraps
 
@@ -128,7 +125,6 @@ module array_output_buffer #(
     end
 
     // 7. Calculate next count for buffer (use larger vector to prevent over/underflow)
-    
     temp_next_count = count + writes_to_buffer_count;
     if (actual_read_from_buffer) begin
         temp_next_count = temp_next_count - 1;

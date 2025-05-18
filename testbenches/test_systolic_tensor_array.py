@@ -9,7 +9,7 @@ VECTOR_WIDTH = 4
 
 @cocotb.test()
 async def test_systolic_tensor_array(dut):
-    """Test the fixed-size 4×4 STA using 1-D unpacked ports, accounting for pipeline delays."""
+    """Test the fixed-size 4×4 STA using 1-D unpacked ports. Does not account for edge pipeline delays created by sliding window."""
     dut._log.setLevel(logging.INFO)
     cocotb.start_soon(Clock(dut.clk, 2, units="ns").start())
 

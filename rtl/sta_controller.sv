@@ -1,35 +1,34 @@
 `include "sys_types.svh"
 
 module sta_controller #(
-  // OC_MAX_N is the primary remaining parameter defining the scope of coordinates
-  parameter int OC_MAX_N          = 512 // Max matrix dimension for output_coordinator
+  parameter int OC_MAX_N = 512 // Max matrix dimension for output_coordinator
+  ,parameter int NUM_CH   = 64  // Max number of channels in a layer
 )(
   input  logic clk
   ,input  logic reset
   ,input  logic stall
 
   // Inputs for Output Coordinator (to start/define a block computation)
-  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_mat_size      // Size of the current matrix operation
-  ,input  logic                          controller_input_valid   // Signals start of a new computation
-  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_row       // Base row for the output block
-  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_col       // Base col for the output block
+  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_mat_size           // Size of the current matrix operation
+  ,input  logic                          controller_input_valid        // Signals start of a new computation
+  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_row            // Base row for the output block
+  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_col            // Base col for the output block
 
-  // Inputs for Systolic Tensor Array - Now as Fully Flattened 1D Unpacked Arrays
-  // Each element is the base type (int8_t, logic, int32_t).
-  // Total elements = SA_N rows * SA_VECTOR_WIDTH elements_per_row_for_A (or per_col_for_B)
-  ,input  int8_t  A_input_rows [SA_N*SA_VECTOR_WIDTH]             // Flattened A matrix (row-major)
-  // B_input_cols is conceptually SA_N column vectors, each SA_VECTOR_WIDTH long.
-  // So, total elements = SA_N columns * SA_VECTOR_WIDTH elements_per_column.
-  ,input  int8_t  B_input_cols [SA_N*SA_VECTOR_WIDTH]             // Flattened B matrix (col-major from STA perspective)
-  // Total elements = SA_N PE_rows * SA_N PE_cols
-  ,input  logic                   load_sum_per_row    [SA_N*SA_N] // Flattened load_sum controls (row-major)
-  ,input  logic                   load_bias_per_row   [SA_N*SA_N] // Flattened load_bias controls (row-major)
-  ,input  int32_t                 bias_per_row        [SA_N*SA_N] // Flattened bias values (row-major)
+  // Inputs for requantization controller
+  ,input  logic                          layer_valid                   // High if new layer signal is valid
+  ,input  logic                          layer_idx                     // Index of new layer for computation
 
-  ,output int32_t                 output_C_flat       [TOTAL_PES] // Flattened C matrix output values from STA (per PE)
-  ,output logic                   output_valid_flat   [TOTAL_PES] // Flattened valid flags (per PE)
-  ,output logic [CTRL_N_BITS-1:0] output_abs_row_flat [TOTAL_PES] // Flattened absolute row coordinates (per PE)
-  ,output logic [CTRL_N_BITS-1:0] output_abs_col_flat [TOTAL_PES] // Flattened absolute column coordinates (per PE)
+  // Inputs for systolic array
+  ,input  int8_t  A_input_rows [SA_N*SA_VECTOR_WIDTH]                  // Flattened A matrix (row-major)
+  ,input  int8_t  B_input_cols [SA_N*SA_VECTOR_WIDTH]                  // Flattened B matrix (col-major from STA perspective)
+  ,input  logic                          load_sum_per_row  [SA_N*SA_N] // Flattened load_sum controls (row-major)
+  ,input  logic                          load_bias_per_row [SA_N*SA_N] // Flattened load_bias controls (row-major)
+  ,input  int32_t                        bias_per_row      [SA_N*SA_N] // Flattened bias values (row-major)
+
+  ,output logic                          array_out_valid               // High if corresponding val/row/col is valid
+  ,output int32_t                        array_val_out                 // Value out of each requant unit
+  ,output logic [$clog2(OC_MAX_N+1)-1:0] array_row_out                 // Row for corresponding value
+  ,output logic [$clog2(OC_MAX_N+1)-1:0] array_col_out                 // Column for corresponding value
 );
 
   // Internal dimensions for the 4x4 Systolic Array
@@ -46,7 +45,7 @@ module sta_controller #(
   int8_t  unpacked_B_input [SA_N][SA_VECTOR_WIDTH]; 
   logic   unpacked_load_sum_input [SA_N][SA_N];
   logic   unpacked_load_bias_input[SA_N][SA_N];
-  int32_t unpacked_bias_input    [SA_N][SA_N];
+  int32_t unpacked_bias_input     [SA_N][SA_N];
 
   // Internal wires connecting STA and Output Coordinator
   int32_t sta_C_outputs [SA_N][SA_N]; // STA still outputs in 2D internally
@@ -81,6 +80,7 @@ module sta_controller #(
     end
   end
 
+  // Systolic array processes convolution inputs from exterior input buffers
   systolic_tensor_array #(
     .N(SA_N), 
     .TILE_SIZE(SA_TILE_SIZE),
@@ -115,6 +115,7 @@ module sta_controller #(
     ,.C3(sta_C_outputs[3])
   );
 
+  // Output coordinator tracks compute time of PEs, triggers accumulator value reads when compute is finished
   output_coordinator #(
     .ROWS(SA_N)    
     ,.COLS(SA_N)    
@@ -132,58 +133,59 @@ module sta_controller #(
     ,.out_col(oc_out_col_flat_internal)    
   );
 
-  // Create ROMs
-
-  // Local signals for buffers/activate unit connection
-  logic buffer_out_valid [SA_N];
-  int32_t buffer_output  [SA_N];
-  logic [$clog(OC_MAX_N)-1-:0] buffer_row_out [SA_N];
-  logic [$clog(OC_MAX_N)-1-:0] buffer_col_out [SA_N];
-  logic buffer_out_consume [SA_N];
-
-  generate
-    for (genvar i = 0; i < SA_N; i++) begin : gen_out_buffer
-      int row_offset = i * SA_N + 0;
-      // Create one array output buffer per row
-       array_output_bufferout_buffer #( 
-        .MAX_N(OC_MAX_N)
-        ) out_buffer (
-        .clk(clk)
-        ,.reset(reset)
-        ,.in_valid(oc_out_valid_flat_internal[row_offset:row_offset+3])
-        ,.in_output(sta_C_outputs[i])
-        ,.in_row(oc_out_row_flat_internal[row_offset:row_offset+3])
-        ,.in_col(oc_out_col_flat_internal[row_offset:row_offset+3])
-
-        ,.out_valid(buffer_out_valid[i])
-        ,.out_output(buffer_output[i])
-        ,.out_row(buffer_row_out[i])
-        ,.out_col(buffer_col_out[i])
-        ,.out_consume(buffer_out_consume[i])
-      );
-
-      // Create one requantize-activate unit per row
-      requantize_activate_unit req_act_unit (
-        .clk(clk)
-        ,.quant_mult()
-        ,.shift()
-        ,.choose_zero_point
-        ,.out()
-      );
-    end
-  endgenerate
-
+  int32_t requant_array_val [SA_N*SA_N];
   // Generate controller outputs by assigning directly to the flattened 1D unpacked output arrays
   always_comb begin
-    for (int i = 0; i < SA_N; i++) begin         // Iterating through conceptual rows of PEs
-      for (int j = 0; j < SA_N; j++) begin     // Iterating through conceptual columns of PEs
-        int flat_idx = i * SA_N + j;         // Calculate the flat index for this PE
-        output_C_flat[flat_idx]         = sta_C_outputs[i][j];
-        output_valid_flat[flat_idx]     = oc_out_valid_flat_internal[flat_idx];
-        output_abs_row_flat[flat_idx]   = oc_out_row_flat_internal[flat_idx];   
-        output_abs_col_flat[flat_idx]   = oc_out_col_flat_internal[flat_idx];   
+    for (int i = 0; i < SA_N; i++) begin    // Iterating through conceptual rows of PEs
+      for (int j = 0; j < SA_N; j++) begin  // Iterating through conceptual columns of PEs
+        int flat_idx = i * SA_N + j;        // Calculate the flat index for this PE
+        requant_array_val[flat_idx] = sta_C_outputs[i][j];
       end
     end
   end
+
+  logic                          requant_out_valid [SA_N] // High if corresponding val/row/col is valid
+  int32_t                        requant_val_out   [SA_N] // Value out of each requant unit
+  logic [$clog2(OC_MAX_N+1)-1:0] requant_row_out   [SA_N] // Row for corresponding value
+  logic [$clog2(OC_MAX_N+1)-1:0] requant_col_out   [SA_N] // Column for corresponding value
+
+  // Reads input from STA as they become valid and requantizes them, 1 value per column of STA at a time
+  // Supports SA_N simultaneous reads from each STA column per cycle, but only one requant operation per cycle 
+  requantize_controller #(
+    .MAX_N(OC_MAX_N)
+    ,.SA_N(SA_N)
+  ) requant_unit (
+    .clk(clk)
+    ,.reset(reset)
+    ,.layer_valid(layer_valid)
+    ,.layer_idx(layer_idx)
+    ,.in_valid(oc_out_valid_flat_internal)
+    ,.in_output(sta_C_outputs)
+    ,.in_row(oc_out_row_flat_internal)
+    ,.in_col(oc_out_col_flat_internal)
+    ,.out_valid(requant_out_valid)
+    ,.out_row(requant_row_out)
+    ,.out_col(requant_col_out)
+    ,.out_data(array_val_out)
+  );
+
+  // Requantized pixel value are stored in an SA_NxSA_N buffer, where max pooling is applied as values become available
+  maxpool_unit #(
+    .SA_N(SA_N)
+    ,.MAX_N(OC_MAX_N)
+  ) pool_unit (
+    .clk(clk)
+    ,.reset(reset)
+    ,.pos_row(pos_row)
+    ,.pos_col(pos_col)
+    ,.in_valid(requant_out_valid)
+    ,.in_row(requant_row_out)
+    ,.in_col(requant_col_out)
+    ,.in_data(array_val_out)
+    ,.out_valid(array_out_valid)
+    ,.out_row(array_row_out)
+    ,.out_col(array_col_out)
+    ,.out_data(array_col_out)
+  );
 
 endmodule
