@@ -15,13 +15,13 @@ def generate_hex_file(width, height, filename):
     current_value = 0
 
     for i in range(total_pixels):
-        # Format the current value as a two-digit hexadecimal string
-        # (e.g., 0 -> "00", 10 -> "0A", 255 -> "FF")
-        hex_value = format(current_value, '02X')
+        # Format the current value as an eight-digit hexadecimal string
+        # (e.g., 0 -> "00000000", 10 -> "0000000A", 255 -> "000000FF")
+        hex_value = format(current_value, '08X')
         lines.append(hex_value)
 
-        # Increment and wrap around at 256 (for 8-bit values)
-        current_value = (current_value + 1) % 256
+        # Increment and wrap around at 4294967296 (for 32-bit values)
+        current_value = (current_value + 1) % 4294967296
 
     try:
         with open(filename, 'w') as f:

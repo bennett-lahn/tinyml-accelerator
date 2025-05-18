@@ -1,23 +1,23 @@
 `include "./sliding_window.sv"
 `include "./pixel_reader.sv"
 
-module test_harness_sliding_window(;
+module test_harness_sliding_window #(
 
-    parameter IMG_W = 96;
-    parameter IMG_H = 96;
+    parameter IMG_W = 96,
+    parameter IMG_H = 96
 )(
-    input logic clk;
-    input logic reset;
-    input logic start;
-    output logic valid_out;
-    input logic [$clog2(IMG_W*IMG_H)-1:0] addr_w;
-    output int8_t A0[0:3], A1[0:3], A2[0:3], A3[0:3];
-    input logic [7:0] din;
-    input logic we;
-)
+    input logic clk
+    ,input logic reset
+    ,input logic start
+    ,output logic valid_A0, valid_A1, valid_A2, valid_A3
+    ,input logic [$clog2(IMG_W*IMG_H)-1:0] addr_w
+    ,output int8_t A0[0:3], A1[0:3], A2[0:3], A3[0:3]
+    ,input logic [31:0] din
+    ,input logic we
+);
 
     logic valid;
-    int8_t pixel_in;
+    int32_t pixel_in;
     logic [$clog2(IMG_W*IMG_H)-1:0] pixel_ptr;
 
 
@@ -28,17 +28,19 @@ module test_harness_sliding_window(;
         .clk(clk)
         ,.reset(reset)
         ,.valid_in(valid)
-        ,.pixel_in(pixel_in)
-        ,.valid_out(valid_out)
+        ,.pixels_in_chunk_bus(pixel_in) // Pack 4 copies of pixel_in into 32-bit bus
         ,.A0(A0)
         ,.A1(A1)
         ,.A2(A2)
         ,.A3(A3)
+        ,.valid_A0(valid_A0)
+        ,.valid_A1(valid_A1)  
+        ,.valid_A2(valid_A2)  
+        ,.valid_A3(valid_A3)  
     );
 
     pixel_reader #(
-        .IMG_W(IMG_W),
-        .IMG_H(IMG_H)
+        .DEPTH(IMG_W*IMG_H)
     ) pixel_reader (
         .clk(clk)
         ,.reset(reset)
@@ -48,7 +50,7 @@ module test_harness_sliding_window(;
     );
 
     tensor_ram #(
-        .D_WIDTH(8),
+        .D_WIDTH(32),
         .DEPTH(IMG_W*IMG_H),
         .INIT_FILE("image_data.hex")
     ) tensor_ram (

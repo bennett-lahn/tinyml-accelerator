@@ -1,113 +1,108 @@
 `include "./sys_types.svh"
-// typedef logic signed [7:0]   int8_t;
-// typedef logic signed [15:0] int16_t;
-// typedef logic signed [31:0] int32_t;
-//takes in a pixel per clock cycle and builds the 4x4 output
-//new window every clock cycle!
+// Module behavior:
+// Takes in a 32-bit bus (4 pixels of type int8_t) per clock cycle when valid_in is high.
+// This 32-bit bus is treated as one row of 4 pixels.
+// The module buffers the last 4 such rows.
+// Individual valid signals indicate when each output row is ready, with valid_A0 asserting first.
+// A0 = newest of the 4 buffered rows, A1 = next newest, ..., A3 = oldest row.
+//
+// Example Trace: Input bus sequence (each is 4 pixels): C0, C1, C2, C3...
+// - After C0 input (valid_in high):
+//   A0=C0, valid_A0=1. Other A_x invalid.
+// - After C1 input (valid_in high):
+//   A0=C1, valid_A0=1.
+//   A1=C0, valid_A1=1. Other A_x invalid.
+// - After C2 input (valid_in high):
+//   A0=C2, valid_A0=1.
+//   A1=C1, valid_A1=1.
+//   A2=C0, valid_A2=1. valid_A3 invalid.
+// - After C3 input (valid_in high):
+//   A0=C3, valid_A0=1. (Newest row)
+//   A1=C2, valid_A1=1.
+//   A2=C1, valid_A2=1.
+//   A3=C0, valid_A3=1. (Oldest row of this 4-block window)
+//   At this point, the 4x4 window is (A0=C3, A1=C2, A2=C1, A3=C0).
+
 module sliding_window #(
-    parameter IMG_W = 96,
-    parameter IMG_H = 96
+    parameter IMG_W = 32, // Note: IMG_W and IMG_H are not used in this block-forming logic,
+    parameter IMG_H = 32  // but kept for interface consistency.
 ) (
-    input logic clk
-    ,input logic reset
-    ,input logic valid_in
-    ,input int8_t pixel_in
-    ,output logic valid_out
-    ,output int8_t A0 [0:3]
-    ,output int8_t A1 [0:3]
-    ,output int8_t A2 [0:3]
-    ,output int8_t A3 [0:3]
+    input logic clk,
+    input logic reset,
+    input logic valid_in,                   // Indicates validity of pixels_in_chunk_bus
+    input logic [31:0] pixels_in_chunk_bus, // 4 pixels (int8_t) packed: [P3,P2,P1,P0] where P0 is bits 7:0
+    output int8_t A0 [0:3],                 // Row 0 of the 4x4 window (newest of the 4 buffered rows)
+    output int8_t A1 [0:3],                 // Row 1 of the 4x4 window (1-cycle old row)
+    output int8_t A2 [0:3],                 // Row 2 of the 4x4 window (2-cycles old row)
+    output int8_t A3 [0:3],                 // Row 3 of the 4x4 window (oldest of the 4 buffered rows)
+    output logic valid_A0,                  // Indicates A0 (newest row data) is valid
+    output logic valid_A1,                  // Indicates A1 (1-cycle old row data) is valid
+    output logic valid_A2,                  // Indicates A2 (2-cycles old row data) is valid
+    output logic valid_A3                   // Indicates A3 (3-cycles old row data) is valid
 );
 
-    logic [$clog2(IMG_W)-1:0] col_counter;
-    logic [$clog2(IMG_H)-1:0] row_counter;
+    // Internal buffers to store the last 4 rows.
+    // row_buf0 stores the most recently received valid row (becomes A0).
+    // row_buf1 stores the row received one valid_in cycle before row_buf0 (becomes A1).
+    // row_buf2 stores the row received two valid_in cycles before row_buf0 (becomes A2).
+    // row_buf3 stores the row received three valid_in cycles before row_buf0 (becomes A3).
+    int8_t row_buf0 [0:3]; // Newest
+    int8_t row_buf1 [0:3];
+    int8_t row_buf2 [0:3];
+    int8_t row_buf3 [0:3]; // Oldest
 
-    int8_t line_buff0 [0:IMG_W-1], line_buff1 [0:IMG_W-1], line_buff2 [0:IMG_W-1];
-    int8_t sr0 [0:3], sr1 [0:3], sr2 [0:3], sr3 [0:3];
-
-    // delayed srs 
-    int8_t sr1_c1 [0:3];
-    int8_t sr2_c1 [0:3], sr2_c2 [0:3];
-    int8_t sr3_c1 [0:3], sr3_c2 [0:3], sr3_c3[0:3];
-
-    logic valid_d1, valid_d2, valid_d3;
-    logic valid0;
-
-    int8_t d1, d2, d3;
-
-    assign valid0 = valid_in && (col_counter >= 3) && (row_counter >= 3);
+    // Pipeline to delay valid_in. These will be used to generate individual valid signals.
+    logic valid_in_d1, valid_in_d2, valid_in_d3;
 
     always_ff @(posedge clk) begin
-        if(reset)begin
-            col_counter <= 0;
-            row_counter <= 0;
+        if (reset) begin
+            row_buf0 <= '{default:'0};
+            row_buf1 <= '{default:'0};
+            row_buf2 <= '{default:'0};
+            row_buf3 <= '{default:'0};
+            valid_in_d1 <= 1'b0;
+            valid_in_d2 <= 1'b0;
+            valid_in_d3 <= 1'b0;
+        end else begin
+            // If valid_in is high, new data is loaded into row_buf0,
+            // and existing data shifts down the pipeline.
+            // If valid_in is low, buffers hold their values.
+            if (valid_in) begin
+                // Shift existing rows: row_buf0 -> row_buf1 -> row_buf2 -> row_buf3
+                row_buf3 <= row_buf2;
+                row_buf2 <= row_buf1;
+                row_buf1 <= row_buf0;
 
-            sr1_c1 <= '{default:0};
-            sr2_c1 <= '{default:0};
-            sr2_c2 <= '{default:0};
-            sr3_c1 <= '{default:0};
-            sr3_c2 <= '{default:0};
-            sr3_c3 <= '{default:0};
-            valid_d1 <= 0;
-            valid_d2 <= 0;
-            valid_d3 <= 0;
-        end
-        else if(valid_in) begin
-            if(col_counter == IMG_W-1) begin
-                col_counter <= 0;
-                if(row_counter == IMG_H-1) begin
-                    row_counter <= 0;
-                end
-                else begin
-                    row_counter <= row_counter + 1;
-                end
+                // Load new incoming row into row_buf0 (the newest row buffer)
+                // Pixel mapping: bus LSB (bits 7:0) is pixel 0 of the row.
+                // A_X[0] should correspond to pixels_in_chunk_bus[7:0] for that row.
+                row_buf0[0] <= int8_t'(pixels_in_chunk_bus[7:0]);   // Pixel 0
+                row_buf0[1] <= int8_t'(pixels_in_chunk_bus[15:8]);  // Pixel 1
+                row_buf0[2] <= int8_t'(pixels_in_chunk_bus[23:16]); // Pixel 2
+                row_buf0[3] <= int8_t'(pixels_in_chunk_bus[31:24]); // Pixel 3
             end
-            else begin
-                col_counter <= col_counter + 1;
-            end
-            line_buff2[col_counter] <= line_buff1[col_counter];
-            line_buff1[col_counter] <= line_buff0[col_counter];
-            line_buff0[col_counter] <= pixel_in;
 
-            d1 <= line_buff0[col_counter];
-            d2 <= line_buff1[col_counter];
-            d3 <= line_buff2[col_counter];
-
-            sr0 <= { sr0[0:2], pixel_in};
-            sr1 <= { sr1[0:2], d1};
-            sr2 <= { sr2[0:2], d2};
-            sr3 <= { sr3[0:2], d3};
-
-
-            // pipelining to add delays 
-            sr1_c1 <= sr1;
-            sr2_c1 <= sr2; 
-            sr2_c2 <= sr2_c1;
-            sr3_c1 <= sr3;
-            sr3_c1 <= sr3_c2;
-            sr3_c2 <= sr3_c1;
-            sr3_c3 <= sr3_c2;
-
-            valid_d1 <= valid0;
-            valid_d2 <= valid_d1;
-            valid_d3 <= valid_d2;
-
-
+            // Pipeline the valid_in signal
+            valid_in_d1 <= valid_in;
+            valid_in_d2 <= valid_in_d1;
+            valid_in_d3 <= valid_in_d2;
         end
     end
 
-    always_comb begin
-        A0 = sr0;
-        A1 = sr1_c1;
-        A2 = sr2_c2;
-        A3 = sr3_c3;
+    // Assign outputs: A0 is newest, A3 is oldest
+    assign A0 = row_buf0;
+    assign A1 = row_buf1;
+    assign A2 = row_buf2;
+    assign A3 = row_buf3;
 
-        valid_out = valid_d3;
-    end
+    // Assign individual valid signals for each output row
+    // valid_A0 is true if current input is valid
+    // valid_A1 is true if input 1 cycle ago was valid
+    // valid_A2 is true if input 2 cycles ago was valid
+    // valid_A3 is true if input 3 cycles ago was valid (completing the 4-stage buffer)
+    assign valid_A0 = valid_in;
+    assign valid_A1 = valid_in_d1;
+    assign valid_A2 = valid_in_d2;
+    assign valid_A3 = valid_in_d3;
 
-
-
-
-
-
-endmodule 
+endmodule
