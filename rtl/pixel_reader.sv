@@ -1,17 +1,16 @@
 module pixel_reader #(
-    parameter IMG_W = 96,
-    parameter IMG_H = 96
+    parameter DEPTH = 96*96
 ) (
     input logic clk
     ,input logic reset
     ,input logic start
     
     ,output logic valid_out
-    ,output logic [$clog2(IMG_W*IMG_H)-1:0] pixel_ptr
+    ,output logic [$clog2(DEPTH)-1:0] pixel_ptr
 );
 
-    localparam IMG_SIZE = IMG_W * IMG_H;
-    localparam ADDR_WIDTH = $clog2(IMG_SIZE);
+    // localparam IMG_SIZE = IMG_W * IMG_H;
+    localparam ADDR_WIDTH = $clog2(DEPTH);
 
     typedef enum logic {Idle, Stream} state_t;
     state_t state, next_state;
@@ -32,7 +31,7 @@ module pixel_reader #(
                     end
                 end
                 Stream: begin
-                    if(ptr != IMG_SIZE-1) begin
+                    if(ptr != ADDR_WIDTH'(DEPTH-1)) begin
                         ptr <= ptr + 1;
                     end
                 end
@@ -54,7 +53,7 @@ module pixel_reader #(
             end
             Stream: begin
                 valid_out = 1;
-                if(ptr == IMG_SIZE-1) begin
+                if(ptr == ADDR_WIDTH'(DEPTH-1)) begin
                     next_state = Idle;
                 end
             end
