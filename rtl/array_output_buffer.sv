@@ -1,5 +1,7 @@
 `include "sys_types.svh"
 
+// TODO: Consider how buffer bypassing affects critical path,  whether it is necessary
+
 module array_output_buffer #(
   parameter int MAX_N  = 512
   ,parameter int N_BITS = $clog2(MAX_N)

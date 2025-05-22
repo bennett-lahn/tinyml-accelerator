@@ -1,5 +1,7 @@
 `include "sys_types.svh"
 
+// TODO: Update test_output_coordinator to test channel passthrough
+
 module output_coordinator #(
   parameter int ROWS    = 4                 // # of PE rows
   ,parameter int COLS    = 4                // # of PE columns
@@ -19,9 +21,10 @@ module output_coordinator #(
   ,input  logic [N_BITS-1:0]  pos_col        // Block’s base col
   ,input  logic [CH_BITS-1:0] channel        // Block's channel
 
-  ,output logic              out_valid [ROWS*COLS]
-  ,output logic [N_BITS-1:0] out_row   [ROWS*COLS]
-  ,output logic [N_BITS-1:0] out_col   [ROWS*COLS]
+  ,output logic               out_valid    [ROWS*COLS] // High if corresponding STA output is valid, complete
+  ,output logic [N_BITS-1:0]  out_row      [ROWS*COLS] // Row in channel for each PE
+  ,output logic [N_BITS-1:0]  out_col      [ROWS*COLS] // Col in channel for each PE
+  ,output logic [CH_BITS-1:0] out_channels [ROWS*COLS] // Current channel in layer for each PE
 );
 
   // Inject new block only into PE(0,0)
@@ -87,6 +90,7 @@ module output_coordinator #(
           active      [flat_idx_curr_pe] <= 1'b1;
           base_row    [flat_idx_curr_pe] <= base_row[flat_idx_above_pe];
           base_col    [flat_idx_curr_pe] <= base_col[flat_idx_above_pe];
+          channels    [flat_idx_curr_pe] <= channels[flat_idx_above_pe];
         end
       end
 
@@ -102,6 +106,7 @@ module output_coordinator #(
             active      [flat_idx_curr_pe] <= 1'b1;
             base_row    [flat_idx_curr_pe] <= base_row[flat_idx_left_pe];
             base_col    [flat_idx_curr_pe] <= base_col[flat_idx_left_pe];
+            channels    [flat_idx_curr_pe] <= channels[flat_idx_left_pe];
           end
         end
       end
@@ -118,6 +123,7 @@ module output_coordinator #(
         // Calculate absolute row/col for the output using offset from PE(0,0)
         out_row  [flat_idx] = base_row[flat_idx] + N_BITS'(i);
         out_col  [flat_idx] = base_col[flat_idx] + N_BITS'(j);
+        out_channels[flat_idx] = channels[flat_idx];
       end
     end
   end

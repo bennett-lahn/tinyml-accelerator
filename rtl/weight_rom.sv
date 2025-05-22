@@ -1,7 +1,6 @@
 // Parameterizable synchronous ROM for CNN layer weights
 // Stores weights for multiple layers with configurable kernel sizes and channel counts
 // Returns 16 weights at a time to support STA capacity
-// Left shift 4 equivalent to multiplying by 16, used for hardware simplicity
 
 // TODO: Note that method for calculating layer offsets, valid bit and total ROM size is untested
 module weight_rom #(
@@ -104,6 +103,7 @@ module weight_rom #(
             // Output is valid if it is within bounds of layer_sel's weight count
             weight_out[i] <= weight_rom[calc_addr];
             for (int i = 0; i < 15; i++) begin
+                // Left shift 4 equivalent to multiplying by 16, used for hardware simplicity
                 valid_out[i]  <= (addr<<VECTOR_SHIFT + i < WEIGHTS_PER_LAYER[layer_sel]) ? 1'b1 : 1'b0;
             end
         end

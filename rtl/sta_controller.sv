@@ -1,8 +1,9 @@
 `include "sys_types.svh"
 
 module sta_controller #(
-  parameter int OC_MAX_N = 512 // Max matrix dimension for output_coordinator
-  ,parameter int NUM_CH   = 64  // Max number of channels in a layer
+  parameter int OC_MAX_N = 512              // Max matrix dimension for output_coordinator
+  ,parameter int NUM_CH  = 64               // Max number of channels in a layer
+  ,parameter int CH_BITS = $clog2(NUM_CH+1) // Bits to hold channel number
 )(
   input  logic clk
   ,input  logic reset
@@ -13,6 +14,7 @@ module sta_controller #(
   ,input  logic                          controller_input_valid        // Signals start of a new computation
   ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_row            // Base row for the output block
   ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_col            // Base col for the output block
+  ,input  logic [$clog2(NUM_CH+1)-1:0]   controller_channel            // Layer channel for the output block
 
   // Inputs for requantization controller
   ,input  logic                          layer_valid                   // High if new layer signal is valid
@@ -54,6 +56,7 @@ module sta_controller #(
   logic                          oc_out_valid_flat_internal [TOTAL_PES]; 
   logic [CTRL_N_BITS-1:0]        oc_out_row_flat_internal   [TOTAL_PES]; 
   logic [CTRL_N_BITS-1:0]        oc_out_col_flat_internal   [TOTAL_PES]; 
+  logic [CH_BITS-1:0]            oc_out_chnnl_flat_internal [TOTAL_PES];
 
   // Unpack flattened 1D inputs into intermediate 2D arrays
   always_comb begin
@@ -120,6 +123,8 @@ module sta_controller #(
     .ROWS(SA_N)    
     ,.COLS(SA_N)    
     ,.MAX_N(OC_MAX_N)
+    ,.NUM_CH(NUM_CH)
+    ,.CH_BITS(CH_BITS)
   ) oc_unit (
     .clk(clk)
     ,.reset(reset)
@@ -128,12 +133,15 @@ module sta_controller #(
     ,.stall(stall) 
     ,.pos_row(controller_pos_row)
     ,.pos_col(controller_pos_col)
+    ,.channel(controller_channel)
     ,.out_valid(oc_out_valid_flat_internal) 
     ,.out_row(oc_out_row_flat_internal)   
     ,.out_col(oc_out_col_flat_internal)    
+    ,.out_channels(oc_out_chnnl_flat_internal)
   );
 
   int32_t requant_array_val [SA_N*SA_N];
+
   // Generate controller outputs by assigning directly to the flattened 1D unpacked output arrays
   always_comb begin
     for (int i = 0; i < SA_N; i++) begin    // Iterating through conceptual rows of PEs
@@ -144,10 +152,10 @@ module sta_controller #(
     end
   end
 
-  logic                          requant_out_valid [SA_N] // High if corresponding val/row/col is valid
-  int32_t                        requant_val_out   [SA_N] // Value out of each requant unit
-  logic [$clog2(OC_MAX_N+1)-1:0] requant_row_out   [SA_N] // Row for corresponding value
-  logic [$clog2(OC_MAX_N+1)-1:0] requant_col_out   [SA_N] // Column for corresponding value
+  logic                          requant_out_valid [SA_N]; // High if corresponding val/row/col is valid
+  int32_t                        requant_val_out   [SA_N]; // Value out of each requant unit
+  logic [$clog2(OC_MAX_N+1)-1:0] requant_row_out   [SA_N]; // Row for corresponding value
+  logic [$clog2(OC_MAX_N+1)-1:0] requant_col_out   [SA_N]; // Column for corresponding value
 
   // Reads input from STA as they become valid and requantizes them, 1 value per column of STA at a time
   // Supports SA_N simultaneous reads from each STA column per cycle, but only one requant operation per cycle 
@@ -160,7 +168,7 @@ module sta_controller #(
     ,.layer_valid(layer_valid)
     ,.layer_idx(layer_idx)
     ,.in_valid(oc_out_valid_flat_internal)
-    ,.in_output(sta_C_outputs)
+    ,.in_output(requant_array_val)
     ,.in_row(oc_out_row_flat_internal)
     ,.in_col(oc_out_col_flat_internal)
     ,.out_valid(requant_out_valid)

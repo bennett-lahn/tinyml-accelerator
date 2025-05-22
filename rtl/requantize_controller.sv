@@ -1,7 +1,7 @@
 `include "sys_types.svh"
 
 module requantize_controller #(
-  parameter int SA_N               = 4    // # of buffer/quant pairs
+  parameter int SA_N               = 4   // # of buffer/quant pairs
   ,parameter int NUM_LAYERS        = 6   // # of layers in model
   ,parameter int MISC_LAYER_IDX    = -1  // index for misc scales
   ,parameter int SPECIAL_LAYER_IDX = 7   // layer that uses special zero-point
