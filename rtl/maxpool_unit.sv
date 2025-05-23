@@ -21,6 +21,7 @@ module maxpool_unit #(
   ,input  int8_t               in_data  [SA_N]
 
   // MaxPool output
+  ,output logic                idle
   ,output logic                out_valid
   ,output logic [N_BITS-1:0]   out_row
   ,output logic [N_BITS-1:0]   out_col
@@ -87,6 +88,7 @@ module maxpool_unit #(
 
   // Detect first ready H×W block, find max, compute coords
   always_comb begin
+    idle           = ~out_valid;
     block_ready    = 1'b0;
     off_r          = 1'b0;
     off_c          = 1'b0;
@@ -131,6 +133,11 @@ module maxpool_unit #(
       comb_out_row   = N_BITS'(pos_row + FILTER_H*blk_r); // (0,0) of block becomes new row/col value
       comb_out_col   = N_BITS'(pos_col + FILTER_W*blk_c);
     end
+
+    // Idle is high if all values of valid_map are zero and out_valid is zero
+    for (int i = 0; i < SA_N; i++)
+      for (int j = 0; j < SA_N; j++)
+        idle &= ~valid_map[i][j];
   end
 
 endmodule

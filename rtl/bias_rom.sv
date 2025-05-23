@@ -8,9 +8,11 @@ module bias_rom #(
     ,parameter int BIAS_WIDTH = 32                     // Bit width of each bias value
 )(
     input  logic clk                                   // Clock for synchronous read
+    ,input  logic                          read_valid  // High if read request is valid
     ,input  logic [$clog2(NUM_LAYERS)-1:0] layer_sel   // Layer select: selects which layer's bias to access
     ,input  logic [$clog2(LAYER_CHANNELS[0])-1:0] addr // Address within the selected layer (channel index)
 
+    ,output logic                  out_valid           // High if output value is valid (from valid read request) 
     ,output logic [BIAS_WIDTH-1:0] bias_out            // bias value at the specified layer and channel
 );
 
@@ -58,7 +60,12 @@ module bias_rom #(
 
     // Synchronous ROM Read
     always_ff @(posedge clk) begin
-        bias_out <= bias_rom[calc_addr];
+        if (read_valid) begin
+            out_valid <= 1'b1;
+            bias_out <= bias_rom[calc_addr];
+        end else begin
+            out_valid <= 1'b0;
+        end
     end
 
 endmodule

@@ -1,6 +1,6 @@
 `include "sys_types.svh"
 
-// TODO: Consider how buffer bypassing affects critical path,  whether it is necessary
+// TODO: Consider how buffer bypassing affects critical path, whether it is necessary
 
 module array_output_buffer #(
   parameter int MAX_N  = 512
@@ -20,6 +20,7 @@ module array_output_buffer #(
   ,input  logic [N_BITS-1:0] in_col    [NUM_WRITE_PORTS] // Column in matrix of data input
 
   // single read port
+  ,output logic              idle            // High if buffer is empty and has no incoming data
   ,output logic              out_valid       // High if output is valid and should be read
   ,output int32_t            out_output      // Unquantized output value
   ,output logic [N_BITS-1:0] out_row         // Row in matrix of data output
@@ -217,6 +218,7 @@ module array_output_buffer #(
       out_row    = buffer[rd_ptr].row;
       out_col    = buffer[rd_ptr].col;
     end
+    idle = (count == '0 && in_valid == '0) ? 1'b1 : 1'b0; 
   end // always_comb
 
 endmodule

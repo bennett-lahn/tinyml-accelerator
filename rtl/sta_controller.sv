@@ -1,36 +1,45 @@
 `include "sys_types.svh"
 
 module sta_controller #(
-  parameter int OC_MAX_N = 512              // Max matrix dimension for output_coordinator
-  ,parameter int NUM_CH  = 64               // Max number of channels in a layer
-  ,parameter int CH_BITS = $clog2(NUM_CH+1) // Bits to hold channel number
+  parameter int OC_MAX_N     = 512                  // Max matrix dimension for output_coordinator
+  ,parameter int MAX_NUM_CH  = 64                   // Max number of channels in a layer
+  ,parameter int CH_BITS     = $clog2(MAX_NUM_CH+1) // Bits to hold channel number
 )(
   input  logic clk
   ,input  logic reset
   ,input  logic stall
+  ,input  logic bypass_maxpool
 
   // Inputs for Output Coordinator (to start/define a block computation)
-  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_mat_size           // Size of the current matrix operation
-  ,input  logic                          controller_input_valid        // Signals start of a new computation
-  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_row            // Base row for the output block
-  ,input  logic [$clog2(OC_MAX_N+1)-1:0] controller_pos_col            // Base col for the output block
-  ,input  logic [$clog2(NUM_CH+1)-1:0]   controller_channel            // Layer channel for the output block
+  ,input  logic [$clog2(OC_MAX_N+1)-1:0]   controller_mat_size           // Size of the current matrix operation
+  ,input  logic                            controller_input_valid        // Signals start of a new computation
+  ,input  logic [$clog2(OC_MAX_N+1)-1:0]   controller_pos_row            // Base row for the output block
+  ,input  logic [$clog2(OC_MAX_N+1)-1:0]   controller_pos_col            // Base col for the output block
+  ,input  logic [$clog2(MAX_NUM_CH+1)-1:0] controller_channel            // Layer channel for the output block
 
   // Inputs for requantization controller
   ,input  logic                          layer_valid                   // High if new layer signal is valid
   ,input  logic                          layer_idx                     // Index of new layer for computation
 
   // Inputs for systolic array
+  // Systolic array controller assumes all inputs are already properly buffered/delayed for correct computation
   ,input  int8_t  A_input_rows [SA_N*SA_VECTOR_WIDTH]                  // Flattened A matrix (row-major)
   ,input  int8_t  B_input_cols [SA_N*SA_VECTOR_WIDTH]                  // Flattened B matrix (col-major from STA perspective)
   ,input  logic                          load_sum_per_row  [SA_N*SA_N] // Flattened load_sum controls (row-major)
   ,input  logic                          load_bias_per_row [SA_N*SA_N] // Flattened load_bias controls (row-major)
   ,input  int32_t                        bias_per_row      [SA_N*SA_N] // Flattened bias values (row-major)
 
+  ,output logic                          idle                          // High if STA complex is idle
   ,output logic                          array_out_valid               // High if corresponding val/row/col is valid
-  ,output int32_t                        array_val_out                 // Value out of each requant unit
+  ,output int8_t                         array_val_out                 // Value out of max pool unit
   ,output logic [$clog2(OC_MAX_N+1)-1:0] array_row_out                 // Row for corresponding value
   ,output logic [$clog2(OC_MAX_N+1)-1:0] array_col_out                 // Column for corresponding value
+
+  // Same as above output values, but 4x as many because max pooling does not turn 4 inputs into 1 input when bypassed
+  ,output logic                          array_out_valid_pool_bypass [SA_N] 
+  ,output int8_t                         array_val_out               [SA_N]
+  ,output logic [$clog2(OC_MAX_N+1)-1:0] array_row_out_pool_bypass   [SA_N]
+  ,output logic [$clog2(OC_MAX_N+1)-1:0] array_col_out_pool_bypass   [SA_N]
 );
 
   // Internal dimensions for the 4x4 Systolic Array
@@ -52,7 +61,8 @@ module sta_controller #(
   // Internal wires connecting STA and Output Coordinator
   int32_t sta_C_outputs [SA_N][SA_N]; // STA still outputs in 2D internally
 
-  // Output Coordinator outputs (flattened, as before)
+  // Output Coordinator outputs
+  logic                          oc_idle;
   logic                          oc_out_valid_flat_internal [TOTAL_PES]; 
   logic [CTRL_N_BITS-1:0]        oc_out_row_flat_internal   [TOTAL_PES]; 
   logic [CTRL_N_BITS-1:0]        oc_out_col_flat_internal   [TOTAL_PES]; 
@@ -123,7 +133,7 @@ module sta_controller #(
     .ROWS(SA_N)    
     ,.COLS(SA_N)    
     ,.MAX_N(OC_MAX_N)
-    ,.NUM_CH(NUM_CH)
+    ,.NUM_CH(MAX_NUM_CH)
     ,.CH_BITS(CH_BITS)
   ) oc_unit (
     .clk(clk)
@@ -134,12 +144,14 @@ module sta_controller #(
     ,.pos_row(controller_pos_row)
     ,.pos_col(controller_pos_col)
     ,.channel(controller_channel)
+    ,.idle(oc_idle)
     ,.out_valid(oc_out_valid_flat_internal) 
     ,.out_row(oc_out_row_flat_internal)   
     ,.out_col(oc_out_col_flat_internal)    
     ,.out_channels(oc_out_chnnl_flat_internal)
   );
 
+  // Flattened array of int32_t to be quantized by requant controller when valid
   int32_t requant_array_val [SA_N*SA_N];
 
   // Generate controller outputs by assigning directly to the flattened 1D unpacked output arrays
@@ -152,8 +164,10 @@ module sta_controller #(
     end
   end
 
+  logic                          requant_idle;             // High if requant unit is idle
+  logic                          maxpool_idle              // High if maxpool unit is idle
   logic                          requant_out_valid [SA_N]; // High if corresponding val/row/col is valid
-  int32_t                        requant_val_out   [SA_N]; // Value out of each requant unit
+  int8_t                         requant_val_out   [SA_N]; // Value out of each requant unit
   logic [$clog2(OC_MAX_N+1)-1:0] requant_row_out   [SA_N]; // Row for corresponding value
   logic [$clog2(OC_MAX_N+1)-1:0] requant_col_out   [SA_N]; // Column for corresponding value
 
@@ -171,11 +185,21 @@ module sta_controller #(
     ,.in_output(requant_array_val)
     ,.in_row(oc_out_row_flat_internal)
     ,.in_col(oc_out_col_flat_internal)
+    ,.idle(requant_idle)
     ,.out_valid(requant_out_valid)
     ,.out_row(requant_row_out)
     ,.out_col(requant_col_out)
-    ,.out_data(array_val_out)
+    ,.out_data(requant_val_out)
   );
+
+  // Outputs of STA controller when max pooling is bypassed
+  assign array_row_out_pool_bypass   = requant_row_out;
+  assign array_col_out_pool_bypass   = requant_col_out;
+  assign array_val_out_pool_bypass   = requant_val_out;
+  always_comb begin
+    for (int i = 0; i < SA_N; i++)
+      array_out_valid_pool_bypass[i] = requant_out_valid[i] & bypass_maxpool;
+  end
 
   // Requantized pixel value are stored in an SA_NxSA_N buffer, where max pooling is applied as values become available
   maxpool_unit #(
@@ -189,11 +213,14 @@ module sta_controller #(
     ,.in_valid(requant_out_valid)
     ,.in_row(requant_row_out)
     ,.in_col(requant_col_out)
-    ,.in_data(array_val_out)
+    ,.in_data(requant_val_out)
+    ,.idle(maxpool_idle)
     ,.out_valid(array_out_valid)
     ,.out_row(array_row_out)
     ,.out_col(array_col_out)
-    ,.out_data(array_col_out)
+    ,.out_data(array_val_out)
   );
+
+  assign idle = oc_idle & requant_idle & maxpool_idle;
 
 endmodule

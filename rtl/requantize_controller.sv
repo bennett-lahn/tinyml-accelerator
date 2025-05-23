@@ -24,6 +24,7 @@ module requantize_controller #(
   ,input  logic [N_BITS-1:0] in_col    [SA_N*4]
 
   // Requantized & activated outputs
+  ,output logic              idle
   ,output logic              out_valid [SA_N]
   ,output logic              out_row   [SA_N]
   ,output logic              out_col   [SA_N]
@@ -39,6 +40,7 @@ module requantize_controller #(
 
   // === Array Output Buffers ===
   // Each buffer outputs one value per cycle, with handshake
+  logic              buf_idle        [SA_N]
   logic              buf_out_valid   [SA_N];
   int32_t            buf_out_output  [SA_N];
   logic [N_BITS-1:0] buf_out_row     [SA_N];
@@ -59,6 +61,7 @@ module requantize_controller #(
         ,.in_output   (in_output[ch*4:(ch*4)+3])
         ,.in_row      (in_row[ch*4:(ch*4)+3])
         ,.in_col      (in_col[ch*4:(ch*4)+3])
+        ,.idle        (buf_idle[ch])
         ,.out_valid   (buf_out_valid[ch])
         ,.out_output  (buf_out_output[ch])
         ,.out_row     (buf_out_row[ch])
@@ -115,5 +118,14 @@ module requantize_controller #(
       assign out_col[ch] = buf_out_col[ch];
     end
   endgenerate
+
+  // Requantize idle if all activation units and buffers are idle and have no valid output
+  always_comb begin
+    idle = 1'b1;
+    for (int i = 0; i < SA_N; i++) begin
+      idle &= buf_idle[i];
+      idle &= out_valid[i];
+    end
+  end
 
 endmodule

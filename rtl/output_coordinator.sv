@@ -16,11 +16,12 @@ module output_coordinator #(
   ,input  logic               reset
   ,input  logic [N_BITS-1:0]  mat_size       // N = 3…MAX_N; Used to calculate number of compute cycles
   ,input  logic               input_valid    // Inject new value at PE[0,0]
-  ,input  logic               stall
+  ,input  logic               stall          // Freeze all calculations
   ,input  logic [N_BITS-1:0]  pos_row        // Block’s base row
   ,input  logic [N_BITS-1:0]  pos_col        // Block’s base col
   ,input  logic [CH_BITS-1:0] channel        // Block's channel
 
+  ,output logic               idle                     // High if STA is idle (no calculations running)
   ,output logic               out_valid    [ROWS*COLS] // High if corresponding STA output is valid, complete
   ,output logic [N_BITS-1:0]  out_row      [ROWS*COLS] // Row in channel for each PE
   ,output logic [N_BITS-1:0]  out_col      [ROWS*COLS] // Col in channel for each PE
@@ -57,7 +58,8 @@ module output_coordinator #(
         base_col   [k] <= '0;
         channels   [k] <= '0;
       end
-    end else begin
+    // If stalling, freeze current state
+    end else if (~stall) begin
       // Countdown and retire each PE
       for (int k = 0; k < TOTAL_PES; k++) begin
         if (active[k]) begin
@@ -125,6 +127,11 @@ module output_coordinator #(
         out_col  [flat_idx] = base_col[flat_idx] + N_BITS'(j);
         out_channels[flat_idx] = channels[flat_idx];
       end
+    end
+    // STA is idle if all PEs are inactive
+    idle = 1'b1;
+    for (int i = 0; i < TOTAL_PES; i++) begin
+     idle &= active[i];
     end
   end
 

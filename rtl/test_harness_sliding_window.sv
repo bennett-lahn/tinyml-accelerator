@@ -1,5 +1,3 @@
-`include "./sliding_window.sv"
-`include "./pixel_reader.sv"
 
 module test_harness_sliding_window #(
 
