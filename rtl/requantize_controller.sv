@@ -13,8 +13,7 @@ module requantize_controller #(
   input   logic                                  clk
   ,input  logic                                  reset
 
-  // Layer selection handshake, pulse to latch new layer_idx
-  ,input  logic                                  layer_valid
+  // Current layer
   ,input  logic signed[$clog2(NUM_LAYERS+1)-1:0] layer_idx
 
   // Write-side: parallel write ports to all buffers
@@ -31,16 +30,9 @@ module requantize_controller #(
   ,output int8_t             out_data  [SA_N]
 );
 
-  // Registered layer index
-  logic signed[$clog2(NUM_LAYERS+1)-1:0] layer_idx_reg;
-  always_ff @(posedge clk or posedge reset) begin
-    if (reset)                 layer_idx_reg <= '0;
-    else if (layer_valid)      layer_idx_reg <= layer_idx;
-  end
-
   // === Array Output Buffers ===
   // Each buffer outputs one value per cycle, with handshake
-  logic              buf_idle        [SA_N]
+  logic              buf_idle        [SA_N];
   logic              buf_out_valid   [SA_N];
   int32_t            buf_out_output  [SA_N];
   logic [N_BITS-1:0] buf_out_row     [SA_N];
@@ -84,7 +76,7 @@ module requantize_controller #(
   ) scale_rom_inst (
     .clk             (clk)
     ,.valid          (1'b1) // Always valid: fetch scale for current layer
-    ,.layer_idx      (layer_idx_reg)
+    ,.layer_idx      (layer_idx)
     ,.input_mult_out (input_mult)
     ,.input_shift_out(input_shift)
   );
@@ -92,7 +84,7 @@ module requantize_controller #(
   // === Shared quantization parameters for all channels ===
   logic choose_zero_point;
 
-  assign choose_zero_point = (layer_idx_reg == SPECIAL_LAYER_IDX);
+  assign choose_zero_point = (layer_idx == SPECIAL_LAYER_IDX);
 
   // === Requantize/Activate Units and Control ===
   generate

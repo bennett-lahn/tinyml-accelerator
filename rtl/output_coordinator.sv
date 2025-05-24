@@ -1,12 +1,8 @@
 `include "sys_types.svh"
 
-// TODO: Update test_output_coordinator to test channel passthrough
-
 module output_coordinator #(
   parameter int ROWS    = 4                 // # of PE rows
   ,parameter int COLS    = 4                // # of PE columns
-  ,parameter int NUM_CH  = 64               // Max channels in any layer
-  ,parameter int CH_BITS = $clog2(NUM_CH+1) // Bits to hold channel number
   ,parameter int MAX_N   = 512              // Max matrix dimension calculated
   ,parameter int N_BITS  = $clog2(MAX_N+1)  // Bits to hold mat_size & coords
   // worst-case delay = (ROWS-1)+(COLS-1)+ceil(MAX_N/4)
@@ -14,18 +10,19 @@ module output_coordinator #(
 )(
   input  logic                clk
   ,input  logic               reset
-  ,input  logic [N_BITS-1:0]  mat_size       // N = 3…MAX_N; Used to calculate number of compute cycles
-  ,input  logic               input_valid    // Inject new value at PE[0,0]
-  ,input  logic               stall          // Freeze all calculations
-  ,input  logic [N_BITS-1:0]  pos_row        // Block’s base row
-  ,input  logic [N_BITS-1:0]  pos_col        // Block’s base col
-  ,input  logic [CH_BITS-1:0] channel        // Block's channel
+  ,input  logic [N_BITS-1:0]  mat_size                 // N = 3…MAX_N; Used to calculate number of compute cycles
+  ,input  logic               input_valid              // Inject new value at PE[0,0]
+  ,input  logic               stall                    // Freeze all calculations
+  ,input  logic [N_BITS-1:0]  pos_row                  // Block’s base row
+  ,input  logic [N_BITS-1:0]  pos_col                  // Block’s base col
+  ,input  logic               pe_mask [ROWS*COLS]      // 1 if PE should be active, 0 if ignored
+
+
 
   ,output logic               idle                     // High if STA is idle (no calculations running)
   ,output logic               out_valid    [ROWS*COLS] // High if corresponding STA output is valid, complete
   ,output logic [N_BITS-1:0]  out_row      [ROWS*COLS] // Row in channel for each PE
   ,output logic [N_BITS-1:0]  out_col      [ROWS*COLS] // Col in channel for each PE
-  ,output logic [CH_BITS-1:0] out_channels [ROWS*COLS] // Current channel in layer for each PE
 );
 
   // Inject new block only into PE(0,0)
@@ -42,7 +39,6 @@ module output_coordinator #(
   logic               active      [TOTAL_PES];
   logic [N_BITS-1:0]  base_row    [TOTAL_PES];
   logic [N_BITS-1:0]  base_col    [TOTAL_PES];
-  logic [CH_BITS-1:0] channels    [TOTAL_PES];
 
   // Base row and column could be stored in one register currently as the STA only computes one base row/col at a time
   // In the future, further pipelining of STA could mean that multiple base row/cols are active at a time, meaning each
@@ -56,7 +52,6 @@ module output_coordinator #(
         active     [k] <= 1'b0;
         base_row   [k] <= '0;
         base_col   [k] <= '0;
-        channels   [k] <= '0;
       end
     // If stalling, freeze current state
     end else if (~stall) begin
@@ -78,7 +73,6 @@ module output_coordinator #(
         active      [PE00_FLAT_IDX] <= 1'b1;
         base_row    [PE00_FLAT_IDX] <= pos_row;
         base_col    [PE00_FLAT_IDX] <= pos_col;
-        channels    [PE00_FLAT_IDX] <= channel;
       end
 
       // Propagate down column 0 from above neighbor
@@ -92,7 +86,6 @@ module output_coordinator #(
           active      [flat_idx_curr_pe] <= 1'b1;
           base_row    [flat_idx_curr_pe] <= base_row[flat_idx_above_pe];
           base_col    [flat_idx_curr_pe] <= base_col[flat_idx_above_pe];
-          channels    [flat_idx_curr_pe] <= channels[flat_idx_above_pe];
         end
       end
 
@@ -108,7 +101,6 @@ module output_coordinator #(
             active      [flat_idx_curr_pe] <= 1'b1;
             base_row    [flat_idx_curr_pe] <= base_row[flat_idx_left_pe];
             base_col    [flat_idx_curr_pe] <= base_col[flat_idx_left_pe];
-            channels    [flat_idx_curr_pe] <= channels[flat_idx_left_pe];
           end
         end
       end
@@ -121,17 +113,18 @@ module output_coordinator #(
       for (int j = 0; j < COLS; j++) begin
         int flat_idx = i * COLS + j;
         // Output is valid for the cycle where curr_cnt becomes 0
-        out_valid[flat_idx] = active[flat_idx] && (curr_cnt[flat_idx] == '0);
+        out_valid[flat_idx] = active[flat_idx] && (curr_cnt[flat_idx] == '0) && pe_mask[flat_idx];
         // Calculate absolute row/col for the output using offset from PE(0,0)
         out_row  [flat_idx] = base_row[flat_idx] + N_BITS'(i);
         out_col  [flat_idx] = base_col[flat_idx] + N_BITS'(j);
-        out_channels[flat_idx] = channels[flat_idx];
       end
     end
-    // STA is idle if all PEs are inactive
+    // STA is idle if all PEs used for this tile are inactive
     idle = 1'b1;
-    for (int i = 0; i < TOTAL_PES; i++) begin
-     idle &= active[i];
+    for (int flat_idx = 0; flat_idx < TOTAL_PES; flat_idx++) begin
+      if (active[flat_idx] & pe_mask[flat_idx]) begin
+        idle = 1'b0;
+      end
     end
   end
 
