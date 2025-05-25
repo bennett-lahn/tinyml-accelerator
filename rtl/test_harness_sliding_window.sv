@@ -1,9 +1,7 @@
+// `include "./sliding_window.sv"
+// `include "./pixel_reader.sv"
 
-module test_harness_sliding_window #(
-
-    parameter IMG_W = 96,
-    parameter IMG_H = 96
-)(
+module test_harness_sliding_window(
     input logic clk
     ,input logic reset
     ,input logic start
@@ -63,3 +61,4 @@ module test_harness_sliding_window #(
 
 
 endmodule 
+

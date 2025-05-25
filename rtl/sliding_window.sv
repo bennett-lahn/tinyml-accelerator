@@ -23,10 +23,8 @@
 //   A3=C0, valid_A3=1. (Oldest row of this 4-block window)
 //   At this point, the 4x4 window is (A0=C3, A1=C2, A2=C1, A3=C0).
 
-module sliding_window #(
-    parameter IMG_W = 32, // Note: IMG_W and IMG_H are not used in this block-forming logic,
-    parameter IMG_H = 32  // but kept for interface consistency.
-) (
+module sliding_window  
+    (
     input logic clk,
     input logic reset,
     input logic valid_in,                   // Indicates validity of pixels_in_chunk_bus
@@ -39,7 +37,7 @@ module sliding_window #(
     output logic valid_A1,                  // Indicates A1 (1-cycle old row data) is valid
     output logic valid_A2,                  // Indicates A2 (2-cycles old row data) is valid
     output logic valid_A3                   // Indicates A3 (3-cycles old row data) is valid
-);
+    );
 
     // Internal buffers to store the last 4 rows.
     // row_buf0 stores the most recently received valid row (becomes A0).
