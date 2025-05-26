@@ -1,7 +1,7 @@
 `include "sys_types.svh"
 
 module sta_controller #(
-  parameter int MAX_N     = 512                  // Max matrix dimension for output_coordinator
+  parameter int MAX_N     = 64                  // Max matrix dimension for output_coordinator
   ,parameter int MAX_NUM_CH  = 64                   // Max number of channels in a layer
   ,parameter int CH_BITS     = $clog2(MAX_NUM_CH+1) // Bits to hold channel number
 )(
@@ -11,34 +11,37 @@ module sta_controller #(
   ,input  logic bypass_maxpool
 
   // Inputs for Output Coordinator (to start/define a block computation)
-  ,input  logic [$clog2(MAX_N+1)-1:0]   controller_mat_size           // Size of the current matrix operation
-  ,input  logic                         controller_input_valid        // Signals start of a new computation
   ,input  logic [$clog2(MAX_N+1)-1:0]   controller_pos_row            // Base row for the output block
   ,input  logic [$clog2(MAX_N+1)-1:0]   controller_pos_col            // Base col for the output block
   ,input  logic                         pe_mask [SA_N*SA_N]           // 1 means the PE is active for the current tile
+  ,input  logic                         done                          // Signal from layer controller indicating computation is done
 
   // Inputs for requantization controller
   ,input  logic                          layer_idx                     // Index of new layer for computation
 
   // Inputs for systolic array
   // Systolic array controller assumes all inputs are already properly buffered/delayed for correct computation
-  ,input  int8_t  A_input_rows [SA_N*SA_VECTOR_WIDTH]                  // Flattened A matrix (row-major)
-  ,input  int8_t  B_input_cols [SA_N*SA_VECTOR_WIDTH]                  // Flattened B matrix (col-major from STA perspective)
-  ,input  logic                          load_sum     [SA_N*SA_N]      // Flattened load_sum controls (row-major)
-  ,input  logic                          load_bias    [SA_N*SA_N]      // Flattened load_bias controls (row-major)
-  ,input  int32_t                        bias_per_row [SA_N*SA_N]      // Flattened bias values (row-major)
+  // A matrix inputs: one 4-wide int8 vector per row, left inputs
+  ,input  int8_t   A0 [SA_VECTOR_WIDTH]        // Row 0 of A
+  ,input  int8_t   A1 [SA_VECTOR_WIDTH]        // Row 1 of A
+  ,input  int8_t   A2 [SA_VECTOR_WIDTH]        // Row 2 of A
+  ,input  int8_t   A3 [SA_VECTOR_WIDTH]        // Row 3 of A
 
+  // B matrix inputs: one 4-wide int8 vector per column, top inputs
+  ,input  int8_t   B0 [SA_VECTOR_WIDTH]        // Column 0 of B
+  ,input  int8_t   B1 [SA_VECTOR_WIDTH]        // Column 1 of B
+  ,input  int8_t   B2 [SA_VECTOR_WIDTH]        // Column 2 of B
+  ,input  int8_t   B3 [SA_VECTOR_WIDTH]        // Column 3 of B
+
+  ,input  logic                          load_bias                    // Single load_bias control signal
+  ,input  int32_t                        bias_value                  // Single bias value to be used for all PEs
+
+  // It is up to the reading module to remember if output contains 4 valid 8-bit values or just 3, 2, or 1
   ,output logic                          idle                          // High if STA complex is idle
   ,output logic                          array_out_valid               // High if corresponding val/row/col is valid
-  ,output int8_t                         array_val_out                 // Value out of max pool unit
+  ,output uint32_t                       array_val_out                 // Value out of max pool unit
   ,output logic [$clog2(MAX_N+1)-1:0]    array_row_out                 // Row for corresponding value
   ,output logic [$clog2(MAX_N+1)-1:0]    array_col_out                 // Column for corresponding value
-
-  // Same as above output values, but 4x as many because max pooling does not turn 4 inputs into 1 input when bypassed
-  ,output logic                          array_out_valid_pool_bypass [SA_N] 
-  ,output int8_t                         array_val_out               [SA_N]
-  ,output logic [$clog2(MAX_N+1)-1:0] array_row_out_pool_bypass   [SA_N]
-  ,output logic [$clog2(MAX_N+1)-1:0] array_col_out_pool_bypass   [SA_N]
 );
 
   // Internal dimensions for the 4x4 Systolic Array
@@ -51,9 +54,7 @@ module sta_controller #(
   localparam int TOTAL_PES = SA_N * SA_N;          // Total PEs in the SA_N x SA_N array
 
   // Intermediate 2D arrays for unpacked inputs to STA (internal representation)
-  int8_t  unpacked_A_input [SA_N][SA_VECTOR_WIDTH];
-  int8_t  unpacked_B_input [SA_N][SA_VECTOR_WIDTH]; 
-  logic   unpacked_load_sum_input [SA_N][SA_N];
+
   logic   unpacked_load_bias_input[SA_N][SA_N];
   int32_t unpacked_bias_input     [SA_N][SA_N];
 
@@ -70,27 +71,16 @@ module sta_controller #(
   // Unpack flattened 1D inputs into intermediate 2D arrays
   always_comb begin
     for (int i = 0; i < SA_N; i++) begin // Corresponds to STA row for A, controls; STA column for B
-      // Unpack A_input_rows (row-major flattened)
-      // unpacked_A_input[i] is the i-th row vector for the STA
-      for (int k = 0; k < SA_VECTOR_WIDTH; k++) begin
-        unpacked_A_input[i][k] = A_input_rows[i * SA_VECTOR_WIDTH + k];
-      end
-
-      // Unpack B_input_cols (conceptually column-major flattened for STA)
-      // unpacked_B_input[i] is the i-th column vector for the STA (B0, B1, etc.)
-      for (int k = 0; k < SA_VECTOR_WIDTH; k++) begin
-        unpacked_B_input[i][k] = B_input_cols[i * SA_VECTOR_WIDTH + k];
-      end
-      
-      // Unpack control signals and bias (row-major flattened)
-      // unpacked_load_sum_input[i][j] is for PE at row i, col j
+      // Replicate single bias control and value across all PEs
       for (int j = 0; j < SA_N; j++) begin 
-        unpacked_load_sum_input[i][j]  = load_sum[i * SA_N + j];
-        unpacked_load_bias_input[i][j] = load_bias[i * SA_N + j];
-        unpacked_bias_input[i][j]      = bias_per_row[i * SA_N + j];
+        unpacked_load_bias_input[i][j] = load_bias;
+        unpacked_bias_input[i][j]      = bias_value;
       end
     end
   end
+
+  // Signal from systolic array indicating it's idle
+  logic sta_idle;
 
   // Systolic array processes convolution inputs from exterior input buffers
   systolic_tensor_array #(
@@ -101,18 +91,14 @@ module sta_controller #(
     .clk(clk)
     ,.reset(reset)
     ,.stall(stall)
-    ,.A0(unpacked_A_input[0])
-    ,.A1(unpacked_A_input[1])
-    ,.A2(unpacked_A_input[2])
-    ,.A3(unpacked_A_input[3])
-    ,.B0(unpacked_B_input[0]) // unpacked_B_input[0] is the vector for B0 (col 0)
-    ,.B1(unpacked_B_input[1]) // unpacked_B_input[1] is the vector for B1 (col 1)
-    ,.B2(unpacked_B_input[2])
-    ,.B3(unpacked_B_input[3])
-    ,.load_sum0(unpacked_load_sum_input[0])
-    ,.load_sum1(unpacked_load_sum_input[1])
-    ,.load_sum2(unpacked_load_sum_input[2])
-    ,.load_sum3(unpacked_load_sum_input[3])
+    ,.A0(A0)
+    ,.A1(A1)
+    ,.A2(A2)
+    ,.A3(A3)
+    ,.B0(B0)
+    ,.B1(B1)
+    ,.B2(B2)
+    ,.B3(B3)
     ,.load_bias0(unpacked_load_bias_input[0])
     ,.load_bias1(unpacked_load_bias_input[1])
     ,.load_bias2(unpacked_load_bias_input[2])
@@ -121,13 +107,15 @@ module sta_controller #(
     ,.bias1(unpacked_bias_input[1])
     ,.bias2(unpacked_bias_input[2])
     ,.bias3(unpacked_bias_input[3])
+    ,.pe_mask(pe_mask)
     ,.C0(sta_C_outputs[0])
     ,.C1(sta_C_outputs[1])
     ,.C2(sta_C_outputs[2])
     ,.C3(sta_C_outputs[3])
+    ,.sta_idle(sta_idle)
   );
 
-  // Output coordinator tracks compute time of PEs, triggers accumulator value reads when compute is finished
+  // Output coordinator waits for done and idle signals, then outputs all PE results
   output_coordinator #(
     .ROWS(SA_N)    
     ,.COLS(SA_N)    
@@ -135,12 +123,12 @@ module sta_controller #(
   ) oc_unit (
     .clk(clk)
     ,.reset(reset)
-    ,.mat_size(controller_mat_size)
-    ,.input_valid(controller_input_valid)
     ,.stall(stall) 
     ,.pos_row(controller_pos_row)
     ,.pos_col(controller_pos_col)
     ,.pe_mask(pe_mask)
+    ,.done(done)
+    ,.sta_idle(sta_idle)
     ,.idle(oc_idle)
     ,.out_valid(oc_out_valid_flat_internal) 
     ,.out_row(oc_out_row_flat_internal)   
@@ -160,12 +148,17 @@ module sta_controller #(
     end
   end
 
-  logic                          requant_idle;             // High if requant unit is idle
-  logic                          maxpool_idle   ;          // High if maxpool unit is idle
-  logic                          requant_out_valid [SA_N]; // High if corresponding val/row/col is valid
-  int8_t                         requant_val_out   [SA_N]; // Value out of each requant unit
+  logic                       requant_idle;             // High if requant unit is idle
+  logic                       maxpool_idle;             // High if maxpool unit is idle
+  logic                       requant_out_valid [SA_N]; // High if corresponding val/row/col is valid
+  int8_t                      requant_val_out   [SA_N]; // Value out of each requant unit
   logic [$clog2(MAX_N+1)-1:0] requant_row_out   [SA_N]; // Row for corresponding value
   logic [$clog2(MAX_N+1)-1:0] requant_col_out   [SA_N]; // Column for corresponding value
+  
+  logic                       maxpool_out_valid;
+  int8_t                      maxpool_val_out;
+  logic [$clog2(MAX_N+1)-1:0] maxpool_row_out;
+  logic [$clog2(MAX_N+1)-1:0] maxpool_col_out;
 
   // Reads input from STA as they become valid and requantizes them, 1 value per column of STA at a time
   // Supports SA_N simultaneous reads from each STA column per cycle, but only one requant operation per cycle 
@@ -187,15 +180,6 @@ module sta_controller #(
     ,.out_data(requant_val_out)
   );
 
-  // Outputs of STA controller when max pooling is bypassed
-  assign array_row_out_pool_bypass   = requant_row_out;
-  assign array_col_out_pool_bypass   = requant_col_out;
-  assign array_val_out_pool_bypass   = requant_val_out;
-  always_comb begin
-    for (int i = 0; i < SA_N; i++)
-      array_out_valid_pool_bypass[i] = requant_out_valid[i] & bypass_maxpool;
-  end
-
   // Requantized pixel value are stored in an SA_NxSA_N buffer, where max pooling is applied as values become available
   maxpool_unit #(
     .SA_N(SA_N)
@@ -203,19 +187,121 @@ module sta_controller #(
   ) pool_unit (
     .clk(clk)
     ,.reset(reset)
-    ,.pos_row(pos_row)
-    ,.pos_col(pos_col)
+    ,.pos_row(controller_pos_row)
+    ,.pos_col(controller_pos_col)
     ,.in_valid(requant_out_valid)
     ,.in_row(requant_row_out)
     ,.in_col(requant_col_out)
     ,.in_data(requant_val_out)
     ,.idle(maxpool_idle)
-    ,.out_valid(array_out_valid)
-    ,.out_row(array_row_out)
-    ,.out_col(array_col_out)
-    ,.out_data(array_val_out)
+    ,.out_valid(maxpool_out_valid)
+    ,.out_row(maxpool_row_out)
+    ,.out_col(maxpool_col_out)
+    ,.out_data(maxpool_val_out)
   );
 
-  assign idle = oc_idle & requant_idle & maxpool_idle;
+  logic output_buffer_valid [SA_N][SA_N];
+  int8_t output_buffer [SA_N][SA_N];
+  logic [$clog2(SA_N+1)-1:0] last_row_read; // If no output is valid, last_row_read is max value (does not map to any row)
+  logic row_valid [SA_N];
+  
+  // Registered outputs
+  logic array_out_valid_reg;
+  uint32_t array_val_out_reg;
+  logic [$clog2(MAX_N+1)-1:0] array_row_out_reg;
+  logic [$clog2(MAX_N+1)-1:0] array_col_out_reg;
+
+  // Collect results into buffer so they can be output one row at a time
+  // Each row of STA is assigned to a specific requantize unit. Leverage this when bypassing maxpool
+  always_ff @(posedge clk) begin
+    if (reset) begin
+      for (int i = 0; i < SA_N; i++) begin
+        for (int j = 0; j < SA_N; j++) begin
+          output_buffer_valid[i][j] <= 1'b0;
+          output_buffer[i][j] <= 8'd0;
+        end
+      end
+      array_out_valid_reg <= 1'b0;
+      array_val_out_reg <= '0;
+      array_row_out_reg <= '0;
+      array_col_out_reg <= '0;
+      last_row_read <= '1;
+    end else begin  
+      // Clear the row that was outputted in the previous cycle (if any)
+      if (last_row_read != '1) begin
+        output_buffer_valid[last_row_read] <= '{default: 1'b0};
+      end
+      
+      // Update buffer with new data
+      if (bypass_maxpool) begin
+        for (int i = 0; i < SA_N; i++) begin
+          // Skip the row being cleared
+          if (i[$clog2(SA_N+1)-1:0] != last_row_read) begin
+            for (int j = 0; j < SA_N; j++) begin
+              if (requant_out_valid[i] && requant_col_out[i] == controller_pos_col + j) begin
+                output_buffer_valid[i][j] <= 1'b1;
+                output_buffer[i][j] <= requant_val_out[i];
+              end
+            end
+          end
+        end
+      end else begin
+        for (int i = 0; i < SA_N; i++) begin
+          // Skip the row being cleared
+          if (i[$clog2(SA_N+1)-1:0] != last_row_read) begin
+            for (int j = 0; j < SA_N; j++) begin
+              if (maxpool_out_valid && maxpool_row_out == controller_pos_row + i && maxpool_col_out == controller_pos_col + j) begin
+                output_buffer_valid[i][j] <= 1'b1;
+                output_buffer[i][j] <= maxpool_val_out;
+              end
+            end
+          end
+        end
+      end
+      
+      // Priority encoder and output assignment
+      array_out_valid_reg <= 1'b0; // Default: no output valid
+      last_row_read <= '1;  // Default: no row selected
+      
+      for (int i = SA_N-1; i >= 0; i--) begin
+        if (row_valid[i]) begin
+          array_out_valid_reg <= 1'b1;
+          array_val_out_reg <= {output_buffer[i][0], output_buffer[i][1], output_buffer[i][2], output_buffer[i][3]};
+          array_row_out_reg <= controller_pos_row + i;
+          array_col_out_reg <= controller_pos_col;
+          last_row_read <= i[$clog2(SA_N+1)-1:0];
+        end
+      end
+    end
+  end
+
+  // Combinational logic detects when rows are valid based on PE mask
+  // Ignores row that was last read, about to be invalidated
+  always_comb begin
+    for (int i = 0; i < SA_N; i++) begin
+      if (i[$clog2(SA_N+1)-1:0] == last_row_read) begin
+        row_valid[i] = 1'b0;  // Skip row that was just output
+      end else begin
+        row_valid[i] = 1'b1;
+        for (int j = 0; j < SA_N; j++) begin
+          int pe_idx = i * SA_N + j;  // Calculate flat PE index
+          // Only check validity for active PEs in this tile
+          if (pe_mask[pe_idx]) begin
+            row_valid[i] &= output_buffer_valid[i][j];
+          end
+        end
+      end
+    end
+  end
+  
+  // Connect registered outputs to module outputs
+  assign array_out_valid = array_out_valid_reg;
+  assign array_val_out = array_val_out_reg;
+  assign array_row_out = array_row_out_reg;
+  assign array_col_out = array_col_out_reg;
+
+  // TODO: Ensure there is not a cycle gap where everything is idle because oc has finished sending requant data but
+  // requant has not switched to not idle yet
+  assign idle = sta_idle & oc_idle & requant_idle & maxpool_idle;
 
 endmodule

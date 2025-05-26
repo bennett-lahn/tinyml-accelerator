@@ -1,52 +1,48 @@
 `include "sys_types.svh"
 
-// TODO: Currently, this module waits until the entire pipeline is empty before beginning
-// calculations of the next layer/channel, but this should be made more efficient in the future
+// Simplified Layer Controller
+// Manages: current layer, current output channel, and current tile within that output channel
+// Does NOT manage: input channels or kernel locations (handled by other modules)
 
-// TODO: Layer controller currently inaccurately calculates the output for each channel because
-// it does not properly tile across input channels
 module layer_controller #(
   parameter int NUM_LAYERS                = 6
   ,parameter int MAX_NUM_CH				    	  = 64
-  ,parameter int MAX_NUM_CH               = 512 // Max matrix dimension
+  ,parameter int MAX_N                    = 512 // Max matrix dimension
 
   // Convolution parameters per layer
   ,parameter int CONV_IN_H   [NUM_LAYERS] = '{32,  16, 8,  4,  1,  1}
   ,parameter int CONV_IN_W   [NUM_LAYERS] = '{32,  16, 8,  4,  1,  1}
   ,parameter int CONV_OUT_H  [NUM_LAYERS] = '{16,  8,  4,  2,  1,  1}
-  ,parameter int CONV_IN_H   [NUM_LAYERS] = '{16,  8,  4,  2,  1,  1}
+  ,parameter int CONV_OUT_W  [NUM_LAYERS] = '{16,  8,  4,  2,  1,  1}
   ,parameter int CONV_IN_C   [NUM_LAYERS] = '{1,  8,  16,  32, 256,64}
   ,parameter int CONV_OUT_C  [NUM_LAYERS] = '{8,  16, 32,  64, 64, 10}
-  ,parameter int CONV_KH     [NUM_LAYERS] = '{4,  4,   4,  4,  1,  1}
-  ,parameter int CONV_KW     [NUM_LAYERS] = '{4,  4,   4,  4,  1,  1}
-  ,parameter int CONV_STR_H  [NUM_LAYERS] = '{1,  1,   1,  1,  1,  1}
-  ,parameter int CONV_STR_W  [NUM_LAYERS] = '{1,  1,   1,  1,  1,  1}
 )(
   input  logic                     clk
   ,input  logic                    reset
-  ,input  logic                    start       // pulse to begin sequence
+  ,input  logic                    start       // Pulse to begin sequence
   ,input  logic                    stall
-  ,input  logic					           sta_idle
+  ,input  logic					           sta_idle    // STA signals completion of current tile
+  ,input  logic                    done        // Signals completion of current tile computation
 
-  ,output logic                    busy        // high while stepping layers
-  ,output logic                    done        // pulse when all layers finished
+  ,output logic                    busy        // High while stepping layers
+  ,output logic                    done_out    // Pulse when all layers finished
 
   // Current layer and channel index
-  ,output logic [$clog2(NUM_LAYERS)-1:0]   layer_idx
-  ,output logic [$clog2(MAX_NUM_CH+1)-1:0] chnnl_idx
+  ,output logic [$clog2(NUM_LAYERS)-1:0] layer_idx // Index of current layer
+  ,output logic [$clog2(MAX_NUM_CH)-1:0] chnnl_idx // Index of current output channel / filter
 
   // Drive STA controller and memory conv parameters
   ,output logic                    reset_sta
   ,output logic [15:0]             mat_size
   ,output logic					           load_bias
   ,output logic                    start_compute
-  ,output logic [$clog2(MAX_NUM_CH+1)-1:0] controller_pos_row
-  ,output logic [$clog2(MAX_NUM_CH+1)-1:0] controller_pos_col
-  ,output logic                   pe_mask [SA_N*SA_N] // Mask for active PEs in current tile
-  ,output logic [7:0]             kernel_h
-  ,output logic [7:0]             kernel_w
-  ,output logic [7:0]             stride_h
-  ,output logic [7:0]             stride_w
+  ,output logic [$clog2(MAX_N)-1:0] controller_pos_row
+  ,output logic [$clog2(MAX_N)-1:0] controller_pos_col
+  ,output logic                     pe_mask [SA_N*SA_N] // Mask for active PEs in current tile
+
+  // Current layer filter dimensions
+  ,output logic [$clog2(MAX_NUM_CH+1)-1:0] num_filters      // Number of output channels (filters) for current layer
+  ,output logic [$clog2(MAX_NUM_CH+1)-1:0] num_input_channels // Number of input channels for current layer
 
   // Drive STA controller pool parameters
   ,output logic 				           bypass_maxpool
@@ -56,66 +52,63 @@ module layer_controller #(
   localparam SA_N = 4;
 
   // State encoding
-  typedef enum logic [1:0] {
-    S_IDLE
-    ,S_RESET_STA
-    ,S_LOAD_BIAS_1
-    ,S_LOAD_BIAS_2
-    ,S_RUN
-    ,S_DONE
+  typedef enum logic [2:0] {
+    S_IDLE,
+    S_RESET_STA,
+    S_LOAD_BIAS_1,
+    S_LOAD_BIAS_2,
+    S_RUN,
+    S_DONE
   } state_t;
 
   state_t current_state, next_state;
+  
+  // Main counters: layer, channel, and tile
   logic [$clog2(NUM_LAYERS+1)-1:0] layer_count;
   logic [$clog2(MAX_NUM_CH+1)-1:0] channel_count;
+  logic [$clog2(64)-1:0] current_tile_row, current_tile_col;
 
   // Tiling control
-  logic [$clog2(64)-1:0] tiles_per_row, tiles_per_col, total_tiles;
-  logic [$clog2(64)-1:0] current_tile_row, current_tile_col, current_tile_idx;
+  logic [$clog2(64)-1:0] tiles_per_row, tiles_per_col;
   logic [15:0] current_out_h, current_out_w;
   logic last_tile, last_channel, last_layer;
+
   // Tile dimension calculations
   logic [$clog2(SA_N+1)-1:0] current_tile_h, current_tile_w;
   logic [$clog2(SA_N+1)-1:0] remaining_out_h, remaining_out_w;
 
-  // State register
+  // State register and counter logic
   always_ff @(posedge clk or posedge reset) begin
     if (reset) begin
-      current_state   <= S_IDLE;
-      layer_count     <= 'd0;
-      channel_count   <= 'd0;
+      current_state    <= S_IDLE;
+      layer_count      <= 'd0;
+      channel_count    <= 'd0;
       current_tile_row <= 'd0;
       current_tile_col <= 'd0;
-      current_tile_idx <= 'd0;
     end else begin
       current_state <= next_state;
       
-      // Advance counters based on state transitions
-      if (current_state == S_RUN && next_state == S_RESET_STA && sta_idle) begin
-        // Move to next tile/channel/layer
+      // Advance counters when transitioning from S_RUN to S_RESET_STA (tile completion)
+      if (current_state == S_RUN && next_state == S_RESET_STA && sta_idle && done) begin
+        // Advance tile position
         if (current_tile_col == tiles_per_col - 1) begin
           current_tile_col <= 'd0;
           if (current_tile_row == tiles_per_row - 1) begin
             current_tile_row <= 'd0;
-            // Move to next channel
+            // Advance to next channel
             if (channel_count == CONV_OUT_C[layer_count] - 1) begin
               channel_count <= 'd0;
-              layer_count   <= layer_count + 'd1;
+              // Advance to next layer
+              layer_count <= layer_count + 1'd1;
             end else begin
-              channel_count <= channel_count + 'd1;
+              channel_count <= channel_count + 1'd1;
             end
           end else begin
-            current_tile_row <= current_tile_row + 'd1;
+            current_tile_row <= current_tile_row + 1'd1;
           end
         end else begin
-          current_tile_col <= current_tile_col + 'd1;
+          current_tile_col <= current_tile_col + 1'd1;
         end
-        current_tile_idx <= current_tile_idx + 'd1;
-      end else if (current_state == S_LOAD_BIAS_2 && next_state == S_RUN) begin
-        // Reset tile counters for new computation
-        current_tile_row <= 'd0;
-        current_tile_col <= 'd0;
-        current_tile_idx <= 'd0;
       end
     end
   end
@@ -128,7 +121,6 @@ module layer_controller #(
     // Calculate number of 4x4 tiles needed using ceil(current_out_[h/w]/SA_N)
     tiles_per_row = (current_out_h + SA_N - 1) / SA_N;
     tiles_per_col = (current_out_w + SA_N - 1) / SA_N;
-    total_tiles   = tiles_per_row * tiles_per_col;
     
     // Check if this is the last tile/channel/layer
     last_tile    = (current_tile_row == tiles_per_row - 1) && 
@@ -144,6 +136,7 @@ module layer_controller #(
     current_tile_h = (remaining_out_h < SA_N) ? remaining_out_h : SA_N;
     current_tile_w = (remaining_out_w < SA_N) ? remaining_out_w : SA_N;
 
+    // Generate PE mask for current tile
     for (int i = 0; i < SA_N; i++) begin
       for (int j = 0; j < SA_N; j++) begin
         int flat_idx = i * SA_N + j;
@@ -158,25 +151,26 @@ module layer_controller #(
     // Defaults
     next_state       = current_state;
     busy             = 1'b0;
-    done             = 1'b0;
+    done_out         = 1'b0;
     load_bias        = 1'b0;
     start_compute    = 1'b0;
     reset_sta        = 1'b0;
 
     // Output current layer parameters
     mat_size         = (current_out_h > current_out_w) ? current_out_h : current_out_w;
-    kernel_h         = CONV_KH[layer_count];
-    kernel_w         = CONV_KW[layer_count];
-    stride_h         = CONV_STR_H[layer_count];
-    stride_w         = CONV_STR_W[layer_count];
     bypass_maxpool   = (layer_count == NUM_LAYERS - 1); // Last layer bypasses pool
 
     // Calculate current tile position  
     controller_pos_row = current_tile_row * SA_N;
     controller_pos_col = current_tile_col * SA_N;
     
-    layer_idx        = layer_count;
-    chnnl_idx        = channel_count;
+    // Output current indices
+    layer_idx = layer_count;
+    chnnl_idx = channel_count;
+
+    // Output current layer filter dimensions
+    num_filters      = CONV_OUT_C[layer_count];
+    num_input_channels = CONV_IN_C[layer_count];
 
     case (current_state)
       S_IDLE: begin
@@ -209,27 +203,36 @@ module layer_controller #(
         
         if (stall) begin
           next_state = S_RUN;
-        end else if (sta_idle) begin
-          // Move to next tile/channel/layer when STA completes
+          start_compute = 1'b0;
+        end else if (sta_idle && done) begin 
+          // STA has completed the current tile computation and done is asserted
+          start_compute = 1'b0;
+          
           if (last_tile && last_channel && last_layer) begin
             next_state = S_DONE;
-          end else if (last_tile && last_channel) begin
-            next_state = S_RESET_STA; // New layer, reset STA then reload bias
-          end else if (last_tile) begin
-            next_state = S_RESET_STA; // New channel, reset STA then reload bias  
           end else begin
-            next_state = S_RESET_STA; // New tile, reset STA then reload bias
+            // Move to next tile/channel/layer
+            next_state = S_RESET_STA;
           end
-        end else begin
+        end else begin 
+          // STA is still computing current tile or done is not yet asserted
           next_state = S_RUN;
         end
       end
 
       S_DONE: begin
-        done       = 1'b1;
+        done_out   = 1'b1;
         next_state = S_IDLE;
       end
     endcase
   end
 
 endmodule
+
+// Each PE has a VECTOR_WIDTH = 4. Does this mean each PE could take inputs from 4 different channels at a time?
+
+// TODO:
+// 1. start_compute does not do what it needs to 
+// 2. STA idle should only be expected to trigger when the output is completely finished calculating (i.e., at the end of that output tile, but not a finer granularity).
+
+// output coordinator calculation for compute time needs to be updated
