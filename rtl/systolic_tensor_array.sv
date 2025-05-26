@@ -17,12 +17,6 @@ module systolic_tensor_array (
     ,input  int8_t   B2 [0:3]        // Column 2 of B
     ,input  int8_t   B3 [0:3]        // Column 3 of B
 
-    // Per-PE load_sum: when high, loads the value of accumulator from the row above
-    ,input  logic   load_sum0 [0:3]  // Row 0 load_sum for cols 0..3
-    ,input  logic   load_sum1 [0:3]  // Row 1 load_sum
-    ,input  logic   load_sum2 [0:3]  // Row 2 load_sum
-    ,input  logic   load_sum3 [0:3]  // Row 3 load_sum
-
     // Per-PE load_bias: when high, accumulator set to corresponding bias value
     ,input  logic   load_bias0 [0:3] // Row 0 load_bias for cols 0..3
     ,input  logic   load_bias1 [0:3] // Row 1 load_bias
@@ -35,11 +29,17 @@ module systolic_tensor_array (
     ,input  int32_t bias2 [0:3]      // Bias for row 2 PEs
     ,input  int32_t bias3 [0:3]      // Bias for row 3 PEs
 
+    // PE mask to indicate which PEs are active for current tile
+    ,input  logic   pe_mask [0:N*N-1] // 1 if PE should be active, 0 if ignored
+
     // Final outputs: one 4-wide int32 vector per row of PEs, accumulator value for each PE
     ,output int32_t C0 [0:3]         // Outputs from row 0 PEs
     ,output int32_t C1 [0:3]         // Outputs from row 1 PEs
     ,output int32_t C2 [0:3]         // Outputs from row 2 PEs
     ,output int32_t C3 [0:3]         // Outputs from row 3 PEs
+
+    // Idle signal: high when no non-zero inputs or register values (no activity)
+    ,output logic   sta_idle         // High when STA is idle
 );
   
     // Systolic array height/width (NxN PEs)
@@ -58,10 +58,10 @@ module systolic_tensor_array (
     int8_t A_data [0:N-1][0:N-1][0:VECTOR_WIDTH-1];
     int8_t B_data [0:N-1][0:N-1][0:VECTOR_WIDTH-1];
 
-    // Used to transfer accumulator values between processing elements
-    // The first row of psum is 0, as there are no accumulators above it
-    int32_t psum        [0:N][0:N-1];
-    assign psum[0] = '{default: 'b0};
+    // PE outputs for connecting to final outputs
+    int32_t pe_outputs [N][N];
+
+    logic lb_pe; // Intermediate signal used to check if any PEs are loading bias
 
     // Feed in row/col data from edges
     assign A_data[0][0] = A0;  assign B_data[0][0] = B0;
@@ -107,14 +107,10 @@ module systolic_tensor_array (
                         assign B_data[row][col] = B_data[row-1][col];
                     end
                 end
-                logic ls, lb;
-                int32_t b_in;
-                // Select control signals for bias/partial sum load for sum_in for this PE
-                assign ls = (row==0) ? load_sum0[col] :
-                            (row==1) ? load_sum1[col] :
-                            (row==2) ? load_sum2[col] :
-                                       load_sum3[col];
 
+                logic lb;
+                int32_t b_in;
+                // Select control signals for bias load for this PE
                 assign lb = (row==0) ? load_bias0[col] :
                             (row==1) ? load_bias1[col] :
                             (row==2) ? load_bias2[col] :
@@ -124,30 +120,66 @@ module systolic_tensor_array (
                               (row==1) ? bias1[col] :
                               (row==2) ? bias2[col] :
                                          bias3[col];
-                // Choose sum_in: either bias_in or upstream partial sum
-                int32_t sum_in_net;
-                assign sum_in_net = (lb) ? b_in : psum[row][col];
+
                 // Tensor PE: computes 4-dot-product + accumulation
                 tensor_process_elem pe (
                     .clk(clk)
                     ,.reset(reset)
-                    ,.load_sum(ls | lb)
+                    ,.load_bias(lb)
+                    ,.bias_in(b_in)
                     ,.stall(stall)
-                    ,.sum_in(sum_in_net)
                     ,.left_in(A_data[row][col])
                     ,.top_in(B_data[row][col])
-                    ,.sum_out(psum[row+1][col])
+                    ,.sum_out(pe_outputs[row][col])
                 );
             end
         end
     endgenerate
 
-    // Connect C_out to accumulators of processing elements
-    // Ignore first row of psum since it contains input values (hardcoded to 0 for now), not accumulator values
-    assign C0 = psum[1];  // row 0’s outputs live in psum[1][*]
-    assign C1 = psum[2];
-    assign C2 = psum[3];
-    assign C3 = psum[4];
+    // Connect C_out to PE outputs
+    assign C0 = pe_outputs[0];
+    assign C1 = pe_outputs[1];
+    assign C2 = pe_outputs[2];
+    assign C3 = pe_outputs[3];
+
+    // Idle detection logic
+    always_comb begin
+        sta_idle = 1'b1; // Start assuming idle
+        
+        // Check if any valid PE has non-zero inputs or is loading bias
+        for (int row = 0; row < N; row++) begin
+            for (int col = 0; col < N; col++) begin
+                int flat_idx = row * N + col;
+                
+                // Only check PEs that are valid for current tile
+                if (pe_mask[flat_idx]) begin
+                    // Check if any A inputs are non-zero
+                    for (int k = 0; k < VECTOR_WIDTH; k++) begin
+                        if (A_data[row][col][k] != 8'b0) begin
+                            sta_idle = 1'b0;
+                        end
+                    end
+                    
+                    // Check if any B inputs are non-zero
+                    for (int k = 0; k < VECTOR_WIDTH; k++) begin
+                        if (B_data[row][col][k] != 8'b0) begin
+                            sta_idle = 1'b0;
+                        end
+                    end
+                    
+                    // Check if bias loading is active
+                    lb_pe       = (row==0) ? load_bias0[col] :
+                                  (row==1) ? load_bias1[col] :
+                                  (row==2) ? load_bias2[col] :
+                                             load_bias3[col];
+                    if (lb_pe) begin
+                        sta_idle = 1'b0;
+                    end
+                end
+            end
+        end
+    end
+
     /*verilator lint_on UNOPTFLAT*/
 
 endmodule

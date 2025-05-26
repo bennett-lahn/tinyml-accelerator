@@ -47,7 +47,7 @@ async def test_systolic_tensor_array(dut):
                 assert out_val == expected_C_matrix[i][j], \
                     f"❌ {label} C[{i}][{j}] = {out_val}, expected {expected_C_matrix[i][j]}"
 
-    async def apply_inputs_drive_only(A, B, load_sum_mat, load_bias_mat, bias_mat, do_reset, stall=False):
+    async def apply_inputs_drive_only(A, B, load_bias_mat, bias_mat, do_reset, stall=False):
         """Drives inputs for the current cycle without advancing the clock."""
         dut.reset.value = 1 if do_reset else 0
         dut.stall.value = 1 if stall and not do_reset else 0
@@ -58,13 +58,12 @@ async def test_systolic_tensor_array(dut):
             
             getattr(dut, f"A{i}").value = a_input_val
             getattr(dut, f"B{i}").value = b_input_val
-            getattr(dut, f"load_sum{i}").value = load_sum_mat[i]
             getattr(dut, f"load_bias{i}").value= load_bias_mat[i]
             getattr(dut, f"bias{i}").value = bias_mat[i]
 
-    async def apply_inputs_and_tick(A, B, load_sum_mat, load_bias_mat, bias_mat, do_reset, stall=False, cycles=1):
+    async def apply_inputs_and_tick(A, B, load_bias_mat, bias_mat, do_reset, stall=False, cycles=1):
         """Apply inputs and advance the clock by inputted number of cycles."""
-        await apply_inputs_drive_only(A, B, load_sum_mat, load_bias_mat, bias_mat, do_reset, stall)
+        await apply_inputs_drive_only(A, B, load_bias_mat, bias_mat, do_reset, stall)
         for _ in range(cycles):
             await tick()
         # If reset was asserted, de-assert it after the first tick
@@ -80,14 +79,14 @@ async def test_systolic_tensor_array(dut):
 
     async def run_test_case(A_input_mat, B_input_mat, label=""):
         # 1) Reset
-        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, zeros_ctrl_mat, do_reset=True)
+        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, True)
         await tick() # Assert reset for one cycle
-        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, zeros_ctrl_mat, do_reset=False) # De-assert reset
+        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, False) # De-assert reset
         await tick() # DUT operates for one cycle with reset low
         check_output(f"{label} Reset State", zeros_C_mat)
 
         # 2) MAC Operation
-        await apply_inputs_drive_only(A_input_mat, B_input_mat, zeros_ctrl_mat, zeros_ctrl_mat, zeros_ctrl_mat, do_reset=False)
+        await apply_inputs_drive_only(A_input_mat, B_input_mat, zeros_ctrl_mat, zeros_ctrl_mat, False)
         await tick()
 
         # Matrix stores the expected accumulator values for each PE
@@ -107,12 +106,12 @@ async def test_systolic_tensor_array(dut):
                         expected_C_state[r_pe][c_pe] += expected_dot(A_input_mat[r_pe], B_input_mat[c_pe])
             check_output(f"{label} MAC Cycle k={k_cycle}", expected_C_state)
             
-        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, zeros_ctrl_mat, do_reset=False)
+        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, False)
 
         # 3) Final Reset
-        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, zeros_ctrl_mat, do_reset=True)
+        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, True)
         await tick()
-        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, zeros_ctrl_mat, do_reset=False)
+        await apply_inputs_drive_only(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, False)
         await tick()
         check_output(f"{label} Second Reset State", zeros_C_mat)
 
@@ -145,18 +144,18 @@ async def test_systolic_tensor_array(dut):
     bias_val_mat = [[random.randint(-100,100) for _ in range(N)] for _ in range(N)]
 
     # Reset
-    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, bias_val_mat, do_reset=True, cycles=2)
+    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, bias_val_mat, True, 2)
     check_output("Bias-Only Reset Check", zeros_C_mat)
 
     # Load bias into every PE
-    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, ones_ctrl_mat, bias_val_mat, do_reset=False, cycles=2)
+    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, ones_ctrl_mat, bias_val_mat, False, 2)
     # After 1st tick: load_bias is active, bias_val is at PE.sum_in. PE.acc loads it.
     # After 2nd tick: PE.acc holds bias_val. C output reflects it.
     check_output("Bias-Only Load", bias_val_mat)
 
     # Verify no change with zero-MAC
     dut._log.info("Bias-Only: Verifying no change with zero-MAC...")
-    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, bias_val_mat, do_reset=False, cycles=1)
+    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, bias_val_mat, False, 1)
     await tick()
     check_output("Bias + Zero-MAC", bias_val_mat)
     dut._log.info("✅ Bias-Only tests passed!")
@@ -174,15 +173,15 @@ async def test_systolic_tensor_array(dut):
             expected_after_full_mac_wave[r][c] = bias_mac[r][c] + expected_dot(A_mac[r], B_mac[c])
 
     # Reset
-    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, bias_mac, do_reset=True, cycles=2)
+    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, zeros_ctrl_mat, bias_mac, True, 2)
     check_output("Bias+MAC Reset Check", zeros_C_mat)
 
     # Load new bias
-    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, ones_ctrl_mat, bias_mac, do_reset=False, cycles=2)
+    await apply_inputs_and_tick(zeros_A_B_mat, zeros_A_B_mat, zeros_ctrl_mat, ones_ctrl_mat, bias_mac, False, 2)
     check_output("Bias+MAC Load", expected_after_bias_load)
 
     # One MAC step - apply A_mac, B_mac inputs. load_bias should be zero.
-    await apply_inputs_drive_only(A_mac, B_mac, zeros_ctrl_mat, zeros_ctrl_mat, bias_mac, do_reset=False)
+    await apply_inputs_drive_only(A_mac, B_mac, zeros_ctrl_mat, bias_mac, False)
     await tick()
     
     current_C_state_bias_mac = [row[:] for row in expected_after_bias_load] # Start with loaded biases

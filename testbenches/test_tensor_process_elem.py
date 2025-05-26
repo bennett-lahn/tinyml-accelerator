@@ -17,10 +17,10 @@ async def test_tensor_process_elem(dut):
         await RisingEdge(dut.clk)
 
     # Update inputs to dut
-    async def apply_inputs(a, b, sum_in, load_sum, reset):
+    async def apply_inputs(a, b, bias_in, load_bias, reset):
         dut.reset.value = reset
-        dut.load_sum.value = load_sum
-        dut.sum_in.value = sum_in
+        dut.load_bias.value = load_bias
+        dut.bias_in.value = bias_in
         for i in range(4):
             dut.left_in[i].value = a[i]
             dut.top_in[i].value = b[i]
@@ -37,18 +37,18 @@ async def test_tensor_process_elem(dut):
             dut._log.info(f"✅ {name} PASSED")
 
     # Runs test case using provided dut input values
-    async def run_test_case(a, b, load_val, label=""):
+    async def run_test_case(a, b, bias_val, label=""):
         # Reset
         await apply_inputs(a, b, 0, False, True)
         check_equal(f"{label} Reset sum_out", dut.sum_out.value.signed_integer, 0)
 
-        # Load sum
-        await apply_inputs(a, b, load_val, True, False)
-        check_equal(f"{label} Load sum_out", dut.sum_out.value.signed_integer, load_val)
+        # Load bias
+        await apply_inputs(a, b, bias_val, True, False)
+        check_equal(f"{label} Load bias sum_out", dut.sum_out.value.signed_integer, bias_val)
 
         # MAC
         await apply_inputs(a, b, 0, False, False)
-        expected = load_val + expected_dot(a, b)
+        expected = bias_val + expected_dot(a, b)
         check_equal(f"{label} MAC accumulation", dut.sum_out.value.signed_integer, expected)
 
         # Second MAC
@@ -71,13 +71,13 @@ async def test_tensor_process_elem(dut):
         ([127, -128, 127, -128], [-128, 127, -128, 127], 1000, "Mixed extremes"),
     ]
 
-    for a, b, sum_in, label in edge_cases:
-        await run_test_case(a, b, sum_in, f"[Edge: {label}]")
+    for a, b, bias_in, label in edge_cases:
+        await run_test_case(a, b, bias_in, f"[Edge: {label}]")
 
     for i in range(5):
         a = [random.randint(-128, 127) for _ in range(4)]
         b = [random.randint(-128, 127) for _ in range(4)]
-        load_val = random.randint(-1000, 1000)
-        await run_test_case(a, b, load_val, f"[Random {i + 1}]")
+        bias_val = random.randint(-1000, 1000)
+        await run_test_case(a, b, bias_val, f"[Random {i + 1}]")
 
     dut._log.info("✅ All edge and randomized tests completed successfully!")

@@ -3,9 +3,9 @@
 module tensor_process_elem (
  	input  logic clk				  // System clock
     ,input  logic reset				  // Reset high signal
-    ,input logic load_sum             // Selects whether the inputted partial sum or internal partial sum should be output to ACC register
-    ,input  logic stall               // Freezes computation to current value (load_sum overrides)
-    ,input int32_t sum_in		      // Partial sum input from above
+    ,input  logic load_bias           // When high, loads bias value into accumulator
+    ,input  int32_t bias_in           // Bias value to load
+    ,input  logic stall               // Freezes computation to current value
     ,input  int8_t left_in [0:3] 	  // 4 inputs from left, least significant is top input, matrix A
     ,input  int8_t top_in [0:3]       // 4 inputs from top, least significant is left-most input, matrix B
     ,output int32_t sum_out		      // Output from accumulate register
@@ -22,12 +22,12 @@ module tensor_process_elem (
     assign sum = accumulator + int32_t'(mult0) + int32_t'(mult1) + int32_t'(mult2) + int32_t'(mult3);
 
     // Sequential logic for registering inputs
-    // Precedence for accumulator value is reset -> load_sum -> stall -> MAC calculation
+    // Precedence for accumulator value is reset -> load_bias -> stall -> MAC calculation
     always_ff @(posedge clk) begin
     	if (reset) begin
     		accumulator <= 'b0;
     	end else begin
-            accumulator <= (load_sum) ? sum_in : (stall) ? accumulator : sum;
+            accumulator <= (load_bias) ? bias_in : (stall) ? accumulator : sum;
         end
     end
 
