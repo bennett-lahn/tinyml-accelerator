@@ -4,6 +4,7 @@ module pixel_reader #(
     input logic clk
     ,input logic reset
     ,input logic start
+    ,input logic incr
     
     ,output logic valid_out
     ,output logic [$clog2(DEPTH)-1:0] pixel_ptr

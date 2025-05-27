@@ -1,7 +1,10 @@
 // `include "./sliding_window.sv"
 // `include "./pixel_reader.sv"
 
-module test_harness_sliding_window(
+module test_harness_sliding_window #(
+    parameter IMG_W = 96,
+    parameter IMG_H = 96
+) (
     input logic clk
     ,input logic reset
     ,input logic start
@@ -17,10 +20,7 @@ module test_harness_sliding_window(
     logic [$clog2(IMG_W*IMG_H)-1:0] pixel_ptr;
 
 
-    sliding_window #(
-        .IMG_W(IMG_W),
-        .IMG_H(IMG_H)
-    ) dut (
+    sliding_window dut (
         .clk(clk)
         ,.reset(reset)
         ,.valid_in(valid)
@@ -48,7 +48,7 @@ module test_harness_sliding_window(
     tensor_ram #(
         .D_WIDTH(32),
         .DEPTH(IMG_W*IMG_H),
-        .INIT_FILE("image_data.hex")
+        .INIT_FILE("/Users/aadithyamanoj/Documents/GitHub/tinyml-accelerator/src/image_data.hex")
     ) tensor_ram (
         .clk(clk)
         ,.we(we)
