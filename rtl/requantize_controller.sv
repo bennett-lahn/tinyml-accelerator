@@ -75,7 +75,7 @@ module requantize_controller #(
     ,.SHIFT_WIDTH    (SHIFT_WIDTH)
   ) scale_rom_inst (
     .clk             (clk)
-    ,.valid          (1'b1) // Always valid: fetch scale for current layer
+    ,.valid          (1'b1) // Always valid: fetch scale for current layer TODO: not great syle to have valid always on
     ,.layer_idx      (layer_idx)
     ,.input_mult_out (input_mult)
     ,.input_shift_out(input_shift)
