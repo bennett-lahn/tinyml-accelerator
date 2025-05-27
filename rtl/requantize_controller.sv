@@ -25,8 +25,8 @@ module requantize_controller #(
   // Requantized & activated outputs
   ,output logic              idle
   ,output logic              out_valid [SA_N]
-  ,output logic              out_row   [SA_N]
-  ,output logic              out_col   [SA_N]
+  ,output logic [N_BITS-1:0] out_row   [SA_N]
+  ,output logic [$clog2(MAX_N)-1:0] out_col   [SA_N]
   ,output int8_t             out_data  [SA_N]
 );
 
@@ -39,6 +39,24 @@ module requantize_controller #(
   logic [N_BITS-1:0] buf_out_col     [SA_N];
   logic              buf_consume     [SA_N];
 
+  // Intermediate signals for connecting unpacked arrays to buffer instances
+  logic              buf_in_valid   [SA_N][4];
+  int32_t            buf_in_output  [SA_N][4];
+  logic [N_BITS-1:0] buf_in_row     [SA_N][4];
+  logic [N_BITS-1:0] buf_in_col     [SA_N][4];
+
+  // Connect input arrays to intermediate signals
+  always_comb begin
+    for (int ch = 0; ch < SA_N; ch++) begin
+      for (int port = 0; port < 4; port++) begin
+        buf_in_valid[ch][port]  = in_valid[ch*4 + port];
+        buf_in_output[ch][port] = in_output[ch*4 + port];
+        buf_in_row[ch][port]    = in_row[ch*4 + port];
+        buf_in_col[ch][port]    = in_col[ch*4 + port];
+      end
+    end
+  end
+
   generate
     for (genvar ch = 0; ch < SA_N; ch++) begin : BUF
       array_output_buffer #(
@@ -49,10 +67,10 @@ module requantize_controller #(
       ) buf_inst (
         .clk          (clk)
         ,.reset       (reset)
-        ,.in_valid    (in_valid[ch*4:(ch*4)+3])
-        ,.in_output   (in_output[ch*4:(ch*4)+3])
-        ,.in_row      (in_row[ch*4:(ch*4)+3])
-        ,.in_col      (in_col[ch*4:(ch*4)+3])
+        ,.in_valid    (buf_in_valid[ch])
+        ,.in_output   (buf_in_output[ch])
+        ,.in_row      (buf_in_row[ch])
+        ,.in_col      (buf_in_col[ch])
         ,.idle        (buf_idle[ch])
         ,.out_valid   (buf_out_valid[ch])
         ,.out_output  (buf_out_output[ch])
