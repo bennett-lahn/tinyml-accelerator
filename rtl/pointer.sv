@@ -7,7 +7,7 @@ module pointer #(
     ,input logic incr_ptr
     ,output logic [$clog2(DEPTH)-1:0] ptr
 
-)
+);
 
     always_ff @(posedge clk) begin
         if (reset) begin

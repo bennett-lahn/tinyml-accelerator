@@ -3,8 +3,8 @@
 module output_coordinator #(
   parameter int ROWS    = 4                 // # of PE rows
   ,parameter int COLS    = 4                // # of PE columns
-  ,parameter int MAX_N   = 512              // Max matrix dimension calculated
-  ,parameter int N_BITS  = $clog2(MAX_N+1)  // Bits to hold mat_size & coords
+  ,parameter int MAX_N   = 64              // Max matrix dimension calculated
+  ,parameter int N_BITS  = $clog2(MAX_N)  // Bits to hold mat_size & coords
 )(
   input  logic                clk
   ,input  logic               reset

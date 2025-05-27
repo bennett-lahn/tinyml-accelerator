@@ -145,7 +145,7 @@ module systolic_tensor_array (
     // Idle detection logic
     always_comb begin
         sta_idle = 1'b1; // Start assuming idle
-        
+        lb_pe = 1'b0; //TODO: fix latch? Reset bias load signal
         // Check if any valid PE has non-zero inputs or is loading bias
         for (int row = 0; row < N; row++) begin
             for (int col = 0; col < N; col++) begin

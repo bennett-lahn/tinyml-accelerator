@@ -37,11 +37,11 @@ module weight_rom #(
    initial begin
         if (INIT_FILE != "") begin // Only initialize if a file is specified (using the new parameter)
             $display("tensor_ram: Initializing RAM from file: %s", INIT_FILE);
-            $readmemh(INIT_FILE, ram);
+            $readmemh(INIT_FILE, rom);
         end else begin
             //Default initialization if no file is provided, e.g., all zeros
             for (int i = 0; i < DEPTH; i++) begin
-                ram[i] = {D_WIDTH{1'b0}};
+                rom[i] = {WIDTH{1'b0}};
             end
             $display("tensor_ram: No INIT_FILE specified, RAM not initialized from file by $readmemh.");
         end
