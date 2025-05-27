@@ -59,16 +59,17 @@ module sliding_window(
     
     // Pipeline the 4 input rows so that A0_in is output first and then each subsequent row one clock cycle later.
     logic active_row;
-    logic [1:0] row_sel;
+    logic [2:0] row_sel;
 
     always_ff @(posedge clk) begin
         if (reset) begin
             active_row   <= 1'b0;
-            row_sel      <= 2'd0;
+            row_sel      <= 3'd0;
             vA0_pulse    <= 1'b0;
             vA1_pulse    <= 1'b0;
             vA2_pulse    <= 1'b0;
             vA3_pulse    <= 1'b0;
+            A0_data      <= '{default:'0};
             A1_data      <= '{default:'0};
             A2_data      <= '{default:'0};
             A3_data      <= '{default:'0};
@@ -78,16 +79,21 @@ module sliding_window(
             vA1_pulse <= 1'b0;
             vA2_pulse <= 1'b0;
             vA3_pulse <= 1'b0;
+            // Clear outputs every cycle
+            // A0_data <= '{default:'0};
+            // A1_data <= '{default:'0};
+            // A2_data <= '{default:'0};
+            // A3_data <= '{default:'0};
 
             // On start, begin the pipeline
             if (start) begin
                 active_row <= 1'b1;
-                row_sel    <= 2'd0;
+                row_sel    <= 3'd0;
             end
             
-            if (active_row ) begin
+            if (active_row) begin
                 case (row_sel)
-                    2'd0: begin
+                    3'd0: begin
                         A0_data[3] <= A0_in[7:0];
                         A0_data[2] <= A0_in[15:8];
                         A0_data[1] <= A0_in[23:16];
@@ -95,30 +101,58 @@ module sliding_window(
                         vA0_pulse  <= 1'b1;
                         row_sel    <= row_sel + 1;
                     end
-                    2'd1: begin
+                    3'd1: begin
                         A1_data[3] <= A1_in[7:0];
                         A1_data[2] <= A1_in[15:8];
                         A1_data[1] <= A1_in[23:16];
                         A1_data[0] <= A1_in[31:24];
                         vA1_pulse  <= 1'b1;
                         row_sel    <= row_sel + 1;
+                        A0_data[0] <= 0;
+                        A0_data[1] <= 0;
+                        A0_data[2] <= 0;
+                        A0_data[3] <= 0; // Clear A0 data after it has been used
                     end
-                    2'd2: begin
+                    3'd2: begin
                         A2_data[3] <= A2_in[7:0];
                         A2_data[2] <= A2_in[15:8];
                         A2_data[1] <= A2_in[23:16];
                         A2_data[0] <= A2_in[31:24];
                         vA2_pulse  <= 1'b1;
                         row_sel    <= row_sel + 1;
+                        A1_data[0] <= 0;
+                        A1_data[1] <= 0;
+                        A1_data[2] <= 0;
+                        A1_data[3] <= 0; // Clear A1 data after it has been used
                     end
-                    2'd3: begin
+                    3'd3: begin
                         A3_data[3] <= A3_in[7:0];
                         A3_data[2] <= A3_in[15:8];
                         A3_data[1] <= A3_in[23:16];
                         A3_data[0] <= A3_in[31:24];
                         vA3_pulse  <= 1'b1;
+                        A2_data[0] <= 0;
+                        A2_data[1] <= 0;
+                        A2_data[2] <= 0;
+                        A2_data[3] <= 0; 
+                        row_sel   <= row_sel + 1; // Move to the next row
+                        // Clear A2 data after it has been used
+                        // active_row <= 1'b0; // End pipeline after the 4th row
+                    end
+                    3'd4: begin
+                        A3_data[0] <= 0;
+                        A3_data[1] <= 0;
+                        A3_data[2] <= 0;
+                        A3_data[3] <= 0; // Clear A3 data after it has been used
+                        active_row <= 1'b0; // End pipeline after the 4th row
+                        // done <= 1'b1; // Indicate that the sliding window operation is done
+                    end
+                    default: begin
+                        // Do nothing, just keep the last row data
                         active_row <= 1'b0; // End pipeline after the 4th row
                     end
+
+
                 endcase
             end
         end

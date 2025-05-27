@@ -2,6 +2,8 @@ module requantize_scale_rom #(
   parameter int NUM_LAYERS = 6
   ,parameter int MULT_WIDTH = 32                                 // Width of multiplier for quantizing
   ,parameter int SHIFT_WIDTH = 6                                 // Width of shift for quantizing 
+  ,parameter INIT_FILE = "../rtl/quant_params.hex"
+
 ) (
   input  logic clk
   ,input  logic valid                                            // High if read request is valid
@@ -24,7 +26,12 @@ module requantize_scale_rom #(
 
   // Initialization
   initial begin
-    $readmemh("quant_params.hex", rom);
-  end
+        if (INIT_FILE != "") begin // Only initialize if a file is specified (using the new parameter)
+            $display("tensor_ram: Initializing ROM from file: %s", INIT_FILE);
+            $readmemh(INIT_FILE, rom);
+        end else begin
+            $display("tensor_ram: No INIT_FILE specified, ROM not initialized from file by $readmemh.");
+        end
+    end
 
 endmodule

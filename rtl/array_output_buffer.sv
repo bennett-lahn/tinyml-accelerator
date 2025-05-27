@@ -218,7 +218,7 @@ module array_output_buffer #(
       out_row    = buffer[rd_ptr].row;
       out_col    = buffer[rd_ptr].col;
     end
-    idle = (count == '0 && in_valid == '0) ? 1'b1 : 1'b0; 
+    idle = (count == '0 && ~(in_valid[0] & in_valid[1] & in_valid[2] & in_valid[3])) ? 1'b1 : 1'b0; 
   end // always_comb
 
 endmodule

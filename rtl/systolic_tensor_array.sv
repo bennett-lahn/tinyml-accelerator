@@ -29,9 +29,6 @@ module systolic_tensor_array (
     ,input  int32_t bias2 [0:3]      // Bias for row 2 PEs
     ,input  int32_t bias3 [0:3]      // Bias for row 3 PEs
 
-    // PE mask to indicate which PEs are active for current tile
-    ,input  logic   pe_mask [0:N*N-1] // 1 if PE should be active, 0 if ignored
-
     // Final outputs: one 4-wide int32 vector per row of PEs, accumulator value for each PE
     ,output int32_t C0 [0:3]         // Outputs from row 0 PEs
     ,output int32_t C1 [0:3]         // Outputs from row 1 PEs
@@ -150,31 +147,27 @@ module systolic_tensor_array (
         for (int row = 0; row < N; row++) begin
             for (int col = 0; col < N; col++) begin
                 int flat_idx = row * N + col;
-                
-                // Only check PEs that are valid for current tile
-                if (pe_mask[flat_idx]) begin
-                    // Check if any A inputs are non-zero
-                    for (int k = 0; k < VECTOR_WIDTH; k++) begin
-                        if (A_data[row][col][k] != 8'b0) begin
-                            sta_idle = 1'b0;
-                        end
-                    end
-                    
-                    // Check if any B inputs are non-zero
-                    for (int k = 0; k < VECTOR_WIDTH; k++) begin
-                        if (B_data[row][col][k] != 8'b0) begin
-                            sta_idle = 1'b0;
-                        end
-                    end
-                    
-                    // Check if bias loading is active
-                    lb_pe       = (row==0) ? load_bias0[col] :
-                                  (row==1) ? load_bias1[col] :
-                                  (row==2) ? load_bias2[col] :
-                                             load_bias3[col];
-                    if (lb_pe) begin
+                // Check if any A inputs are non-zero
+                for (int k = 0; k < VECTOR_WIDTH; k++) begin
+                    if (A_data[row][col][k] != 8'b0) begin
                         sta_idle = 1'b0;
                     end
+                end
+                
+                // Check if any B inputs are non-zero
+                for (int k = 0; k < VECTOR_WIDTH; k++) begin
+                    if (B_data[row][col][k] != 8'b0) begin
+                        sta_idle = 1'b0;
+                    end
+                end
+                
+                // Check if bias loading is active
+                lb_pe       = (row==0) ? load_bias0[col] :
+                                (row==1) ? load_bias1[col] :
+                                (row==2) ? load_bias2[col] :
+                                            load_bias3[col];
+                if (lb_pe) begin
+                    sta_idle = 1'b0;
                 end
             end
         end

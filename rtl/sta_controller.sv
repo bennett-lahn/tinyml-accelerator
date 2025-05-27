@@ -15,7 +15,6 @@ module sta_controller #(
   // Inputs for Output Coorditor (to start/define a block computation)
   ,input  logic [$clog2(MAX_N)-1:0]   controller_pos_row            // Base row for the output block
   ,input  logic [$clog2(MAX_N)-1:0]   controller_pos_col            // Base col for the output block
-  ,input  logic                         pe_mask [SA_N*SA_N]           // 1 means the PE is active for the current tile
   ,input  logic                         done                          // Signal from layer controller indicating computation is done
 
   // Inputs for requantization controller
@@ -108,7 +107,6 @@ module sta_controller #(
     ,.bias1(unpacked_bias_input[1])
     ,.bias2(unpacked_bias_input[2])
     ,.bias3(unpacked_bias_input[3])
-    ,.pe_mask(pe_mask)
     ,.C0(sta_C_outputs[0])
     ,.C1(sta_C_outputs[1])
     ,.C2(sta_C_outputs[2])
@@ -127,7 +125,6 @@ module sta_controller #(
     ,.stall(stall) 
     ,.pos_row(controller_pos_row)
     ,.pos_col(controller_pos_col)
-    ,.pe_mask(pe_mask)
     ,.done(done)
     ,.sta_idle(sta_idle)
     ,.idle(oc_idle)
@@ -326,10 +323,7 @@ module sta_controller #(
       for (int i = 0; i < SA_N; i++) begin
         for (int j = 0; j < SA_N; j++) begin
           int pe_idx = i * SA_N + j;  // Calculate flat PE index
-          // Only check validity for active PEs in this tile
-          if (pe_mask[pe_idx]) begin
-            all_outputs_ready &= output_buffer_valid[i][j];
-          end
+          all_outputs_ready &= output_buffer_valid[i][j];
         end
       end
     end else begin

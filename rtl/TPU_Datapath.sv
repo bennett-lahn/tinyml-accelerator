@@ -22,17 +22,6 @@ module TPU_Datapath #(
 // STA Controller signals
 logic stall;
 
-// Inputs for systolic array
-int8_t   A0 [SA_VECTOR_WIDTH];        // Row 0 of A
-int8_t   A1 [SA_VECTOR_WIDTH];        // Row 1 of A
-int8_t   A2 [SA_VECTOR_WIDTH];        // Row 2 of A
-int8_t   A3 [SA_VECTOR_WIDTH];        // Row 3 of A
-
-int8_t   B0 [SA_VECTOR_WIDTH];        // Column 0 of B
-int8_t   B1 [SA_VECTOR_WIDTH];        // Column 1 of B
-int8_t   B2 [SA_VECTOR_WIDTH];        // Column 2 of B
-int8_t   B3 [SA_VECTOR_WIDTH];        // Column 3 of B
-
 logic                          load_bias;                    // Single load_bias control signal
 int32_t                        bias_value;                  // Single bias value to be used for all PEs
 
@@ -56,7 +45,6 @@ logic [15:0]                   mat_size;
 logic                          start_compute;
 logic [$clog2(MAX_N)-1:0]      controller_pos_row;
 logic [$clog2(MAX_N)-1:0]      controller_pos_col;
-logic                          pe_mask [SA_N*SA_N]; // Mask for active PEs in current tile
 
 // Current layer filter dimensions
 logic [$clog2(MAX_NUM_CH+1)-1:0] num_filters;      // Number of output channels (filters) for current layer
@@ -84,7 +72,6 @@ logic 				           bypass_maxpool;
     //     ,.start_compute(start_compute)
     //     ,.controller_pos_row(controller_pos_row)
     //     ,.controller_pos_col(controler_pos_col)
-    //     ,.pe_mask(pe_mask)
     //     ,.num_filters(num_filters)
     //     ,.num_input_channels(num_input_channels)
     // );
@@ -98,17 +85,16 @@ logic 				           bypass_maxpool;
         ,.bypass_maxpool('0)
         ,.controller_pos_row('0)
         ,.controller_pos_col('0)
-        ,.pe_mask('{default: '1})
         ,.done(done)
         ,.layer_idx('0)
-        ,.A0(A0)
-        ,.A1(A1)
-        ,.A2(A2)
-        ,.A3(A3)
-        ,.B0(B0)
-        ,.B1(B1)
-        ,.B2(B2)
-        ,.B3(B3)
+        ,.A0(a0_IN_KERNEL)
+        ,.A1(a1_IN_KERNEL)
+        ,.A2(a2_IN_KERNEL)
+        ,.A3(a3_IN_KERNEL)
+        ,.B0(weight_C0)
+        ,.B1(weight_C1)
+        ,.B2(weight_C2)
+        ,.B3(weight_C3)
         ,.load_bias('0)
         ,.bias_value('0) // Assuming bias_value is a 32-bit value, adjust as needed
 
@@ -140,7 +126,7 @@ logic 				           bypass_maxpool;
     #(
         .D_WIDTH(128) // 4 8-bit pixels per read/write
         , .DEPTH(IMG_W * IMG_H) // Assuming IMG_W and IMG_H are defined in the module scope
-        , .INIT_FILE("image_data.hex") // No initialization file specified
+        , .INIT_FILE("../rtl/image_data.hex") // No initialization file specified
     )
     RAM_A
     (
@@ -362,6 +348,6 @@ logic 				           bypass_maxpool;
 
     //======================================================================================================
 
-
+    assign start_sliding_window = start; // Control signal to start the sliding window operation
 
 endmodule

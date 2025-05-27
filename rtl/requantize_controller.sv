@@ -26,11 +26,7 @@ module requantize_controller #(
   ,output logic              idle
   ,output logic              out_valid [SA_N]
   ,output logic [N_BITS-1:0] out_row   [SA_N]
-<<<<<<< HEAD
-  ,output logic [$clog2(MAX_N)-1:0] out_col   [SA_N]
-=======
   ,output logic [N_BITS-1:0] out_col   [SA_N]
->>>>>>> 6b993d8d01180447ccf38fe9051f9d4b5199cfa3
   ,output int8_t             out_data  [SA_N]
 );
 

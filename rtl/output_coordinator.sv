@@ -11,7 +11,6 @@ module output_coordinator #(
   ,input  logic               stall                    // Freeze all calculations
   ,input  logic [N_BITS-1:0]  pos_row                  // Block's base row
   ,input  logic [N_BITS-1:0]  pos_col                  // Block's base col
-  ,input  logic               pe_mask [ROWS*COLS]      // 1 if PE should be active, 0 if ignored
   ,input  logic               done                     // Signal from layer controller indicating computation is done
   ,input  logic               sta_idle                 // Signal from systolic array indicating it's idle
 
@@ -25,15 +24,18 @@ module output_coordinator #(
 
   // State to track if we're currently outputting valid data
   logic output_valid_state;
+  logic read_array; // Never read stale data again without resetting
 
   // State machine to handle output coordination
   always_ff @(posedge clk) begin
     if (reset) begin
       output_valid_state <= 1'b0;
+      read_array <= 1'b0;
     end else if (~stall) begin
-      if (done && sta_idle && ~output_valid_state) begin
+      if (done & sta_idle & ~output_valid_state & ~read_array) begin
         // Both done and idle are asserted, start outputting valid data
         output_valid_state <= 1'b1;
+        read_array <= 1'b1;
       end else if (output_valid_state) begin
         // Clear the output valid state after one cycle
         output_valid_state <= 1'b0;
@@ -46,8 +48,8 @@ module output_coordinator #(
     for (int i = 0; i < ROWS; i++) begin
       for (int j = 0; j < COLS; j++) begin
         int flat_idx = i * COLS + j;
-        // Output is valid when in the output valid state and PE is active
-        out_valid[flat_idx] = output_valid_state && pe_mask[flat_idx];
+        // Output is valid when in the output valid state
+        out_valid[flat_idx] = output_valid_state;
         // Calculate absolute row/col for the output using offset from base position
         out_row[flat_idx] = pos_row + N_BITS'(i);
         out_col[flat_idx] = pos_col + N_BITS'(j);
