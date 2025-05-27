@@ -13,8 +13,8 @@ module sta_controller #(
   ,input  logic bypass_maxpool
 
   // Inputs for Output Coorditor (to start/define a block computation)
-  ,input  logic [$clog2(MAX_N)-1:0]   controller_pos_row            // Base row for the output block
-  ,input  logic [$clog2(MAX_N)-1:0]   controller_pos_col            // Base col for the output block
+  ,input  logic [N_BITS-1:0]   controller_pos_row            // Base row for the output block
+  ,input  logic [N_BITS-1:0]   controller_pos_col            // Base col for the output block
   ,input  logic                         done                          // Signal from layer controller indicating computation is done
 
   // Inputs for requantization controller
@@ -317,24 +317,13 @@ module sta_controller #(
 
   // Combinational logic detects when all outputs are ready
   always_comb begin
-    if (bypass_maxpool) begin
-      // Direct mode: check based on PE mask for 4x4 systolic array
-      all_outputs_ready = 1'b1;
+    all_outputs_ready = 1'b1;
       for (int i = 0; i < SA_N; i++) begin
         for (int j = 0; j < SA_N; j++) begin
           int pe_idx = i * SA_N + j;  // Calculate flat PE index
           all_outputs_ready &= output_buffer_valid[i][j];
         end
       end
-    end else begin
-      // Max pool mode: check if all 4 chunks (2x2 each) are ready
-      all_outputs_ready = 1'b1;
-      for (int i = 0; i < 4; i++) begin
-        for (int j = 0; j < 4; j++) begin
-          all_outputs_ready &= output_buffer_valid[i][j];
-        end
-      end
-    end
   end
   
   // Connect registered outputs to module outputs
