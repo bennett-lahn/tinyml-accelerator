@@ -130,8 +130,9 @@ module maxpool_unit #(
         end
       end
       comb_out_data  = maxv;
-      comb_out_row   = N_BITS'(pos_row + FILTER_H*blk_r); // (0,0) of block becomes new row/col value
-      comb_out_col   = N_BITS'(pos_col + FILTER_W*blk_c);
+      // TODO: Update testbench to reflect that row/col has changed to be block 0  is (0,0), block 1 is (0,1)...
+      comb_out_row   = N_BITS'(pos_row + blk_r); 
+      comb_out_col   = N_BITS'(pos_col + blk_c);
     end
 
     // Idle is high if all values of valid_map are zero and out_valid is zero

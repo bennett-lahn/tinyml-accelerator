@@ -1,13 +1,11 @@
 module requantize_scale_rom #(
   parameter int NUM_LAYERS = 6
-  ,parameter int MISC_SCALES = 10                                // Other scales that don't fit within the convolution layers
   ,parameter int MULT_WIDTH = 32                                 // Width of multiplier for quantizing
   ,parameter int SHIFT_WIDTH = 6                                 // Width of shift for quantizing 
-  ,parameter int MISC_LAYER_IDX = -1                             // Use -1 in layer_idx to indicate misc scales
 ) (
   input  logic clk
   ,input  logic valid                                            // High if read request is valid
-  ,input  logic signed [$clog2(NUM_LAYERS+1)-1:0] layer_idx      // -1 for misc, 0..NUM_LAYERS-1 for layers
+  ,input  logic [$clog2(NUM_LAYERS)-1:0] layer_idx      // -1 for misc, 0..NUM_LAYERS-1 for layers
   ,output logic signed [MULT_WIDTH-1:0] input_mult_out           // Multiplier for the weight scale for selected channel
   ,output logic signed [SHIFT_WIDTH-1:0] input_shift_out         // Shift for the weight scale for selected channel
 );
@@ -16,12 +14,11 @@ module requantize_scale_rom #(
   typedef int layer_addr_t [$clog2(NUM_LAYERS)];
   localparam layer_addr_t LAYER_ADDRS = compute_layer_addresses();
   // The +1 below is for last output scale (not necessary as last layer doesn't requantize but eliminates out of bounds risk)
-  localparam int LAYER_TOTAL_ENTRIES = LAYER_ADDRS[NUM_LAYERS-1] + 1;
-  localparam int DEPTH = MISC_SCALES + LAYER_TOTAL_ENTRIES;
+  localparam int LAYER_TOTAL_ENTRIES = LAYER_ADDRS[NUM_LAYERS];
   localparam int DATA_WIDTH = MULT_WIDTH + SHIFT_WIDTH;
 
   // ROM storage
-  logic [DATA_WIDTH-1:0] rom [0:DEPTH-1];
+  logic [DATA_WIDTH-1:0] rom [0:LAYER];
 
   // Precompute layer start addresses
   function automatic layer_addr_t compute_layer_addresses();

@@ -24,9 +24,6 @@ module layer_controller #(
   ,input  logic					           sta_idle    // STA signals completion of current tile
   ,input  logic                    done        // Signals completion of current tile computation
 
-  ,output logic                    busy        // High while stepping layers
-  ,output logic                    done_out    // Pulse when all layers finished
-
   // Current layer and channel index
   ,output logic [$clog2(NUM_LAYERS)-1:0] layer_idx // Index of current layer
   ,output logic [$clog2(MAX_NUM_CH)-1:0] chnnl_idx // Index of current output channel / filter
@@ -150,8 +147,6 @@ module layer_controller #(
   always_comb begin
     // Defaults
     next_state       = current_state;
-    busy             = 1'b0;
-    done_out         = 1'b0;
     load_bias        = 1'b0;
     start_compute    = 1'b0;
     reset_sta        = 1'b0;
@@ -179,26 +174,22 @@ module layer_controller #(
       end
 
       S_RESET_STA: begin
-        busy      = 1'b1;
         reset_sta = 1'b1;
         next_state = S_LOAD_BIAS_1;
       end
 
       S_LOAD_BIAS_1: begin
-        busy        = 1'b1;
         reset_sta   = 1'b0;
         load_bias   = 1'b1;
         next_state  = S_LOAD_BIAS_2;
       end
 
       S_LOAD_BIAS_2: begin
-        busy       = 1'b1;
         load_bias  = 1'b0;
         next_state = S_RUN;
       end
 
       S_RUN: begin
-        busy          = 1'b1;
         start_compute = 1'b1;
         
         if (stall) begin
@@ -221,7 +212,6 @@ module layer_controller #(
       end
 
       S_DONE: begin
-        done_out   = 1'b1;
         next_state = S_IDLE;
       end
     endcase
