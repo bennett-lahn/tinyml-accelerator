@@ -1,35 +1,26 @@
-`include "./sys_types.svh"
+`include "sys_types.svh"
+
 module TPU_Datapath #(
     parameter IMG_W = 32
     ,parameter IMG_H = 32
-    ,parameter MAX_N = 512 // Default MAX_N from sta_controller
+    ,parameter MAX_N = 64 // Default MAX_N from sta_controller
     ,parameter MAX_NUM_CH = 64
-    ,parameter STA_CTRL_N_BITS = $clog2(MAX_N_STA + 1) // Should be 9 bits for MAX_N=512
+    ,parameter STA_CTRL_N_BITS = $clog2(MAX_N + 1) // Should be 9 bits for MAX_N=512
     ,parameter SA_N = 4  // SA_N from sta_controller
     ,parameter SA_VECTOR_WIDTH = 4 // SA_VECTOR_WIDTH from sta_controller
-    ,parameter TOTAL_PES_STA = SA_N_STA * SA_N_STA // Should be 16
+    ,parameter TOTAL_PES_STA = SA_N * SA_N // Should be 16
     ,parameter NUM_LAYERS = 6 // Number of layers in the model
 ) (
     input logic clk
     ,input logic reset
+    ,input logic read_weights
+    ,input logic read_inputs
+    ,input logic start
+    ,input logic done
 );
 
 // STA Controller signals
-
-logic clk
-logic reset
-logic reset_sta  // Separate reset for everything except output buffer
-logic stall
-logic bypass_maxpool
-
-// Inputs for Output Coordinator (to start/define a block computation)
-logic [$clog2(MAX_N+1)-1:0]   controller_pos_row;            // Base row for the output block
-logic [$clog2(MAX_N+1)-1:0]   controller_pos_col;            // Base col for the output block
-logic                         pe_mask [SA_N*SA_N];           // 1 means the PE is active for the current tile
-logic                         done;                          // Signal from layer controller indicating computation is done
-
-// Inputs for requantization controller
-logic                          layer_idx;                    // Index of new layer for computation
+logic stall;
 
 // Inputs for systolic array
 int8_t   A0 [SA_VECTOR_WIDTH];        // Row 0 of A
@@ -48,12 +39,12 @@ int32_t                        bias_value;                  // Single bias value
 logic                          idle;                          // High if STA complex is idle
 logic                          array_out_valid;               // High if corresponding val/row/col is valid
 logic [127:0]                  array_val_out;                 // Value out of max pool unit
-logic [$clog2(MAX_N+1)-1:0]    array_row_out;                 // Row for corresponding value
-logic [$clog2(MAX_N+1)-1:0]    array_col_out;                 // Column for corresponding value
+logic [$clog2(MAX_N)-1:0]    array_row_out;                 // Row for corresponding value
+logic [$clog2(MAX_N)-1:0]    array_col_out;                 // Column for corresponding value
 
-logic                          start;       // Pulse to begin sequence
+// logic                          start;       // Pulse to begin sequence
 logic					       sta_idle;    // STA signals completion of current tile
-logic                          done;        // Signals completion of current tile computation
+// logic                          done;        // Signals completion of current tile computation
 
 // Current layer and channel index
 logic [$clog2(NUM_LAYERS)-1:0] layer_idx; // Index of current layer
@@ -101,14 +92,14 @@ logic 				           bypass_maxpool;
     sta_controller sta_controller (
         .clk(clk)
         ,.reset(reset)
-
+        ,.reset_sta('0)
         // Inputs to sta_controller
-        ,.stall(stall)
+        ,.stall('0)
         ,.bypass_maxpool('0)
-        ,.controller_input_valid() // Connected to TPU_Datapath's 'start' input
-        ,.controller_pos_row(pos_row)
-        ,.controller_pos_col(pos_col)
-        ,.pe_mask(pe_mask)
+        ,.controller_pos_row('0)
+        ,.controller_pos_col('0)
+        ,.pe_mask('{default: '1})
+        ,.done(done)
         ,.layer_idx('0)
         ,.A0(A0)
         ,.A1(A1)
@@ -119,7 +110,7 @@ logic 				           bypass_maxpool;
         ,.B2(B2)
         ,.B3(B3)
         ,.load_bias('0)
-        ,.bias_per_row('0)
+        ,.bias_value('0) // Assuming bias_value is a 32-bit value, adjust as needed
 
         // Outputs from sta_controller
         ,.idle(idle)
@@ -201,7 +192,7 @@ logic 				           bypass_maxpool;
 
 
     //======================================================================================================
-    logic [($clog2(IMG_W * IMG_H))-1:0] incr_ptr_A; // Pointer for reading from tensor_ram A
+    logic  incr_ptr_A; // Pointer for reading from tensor_ram A
     pointer 
     #(
         .DEPTH(IMG_W * IMG_H) // Assuming IMG_W and IMG_H are defined in the module scope
@@ -214,7 +205,7 @@ logic 				           bypass_maxpool;
         ,.ptr(ram_A_addr_r) // Output pointer for reading from tensor_ram A
     );
 
-    logic [($clog2(IMG_W * IMG_H))-1:0] incr_ptr_B; // Pointer for reading from tensor_ram B
+    logic incr_ptr_B; // Pointer for reading from tensor_ram B
     pointer
     #(
         .DEPTH(IMG_W * IMG_H) // Assuming IMG_W and IMG_H are defined in the module scope
@@ -234,19 +225,19 @@ logic 				           bypass_maxpool;
     // SLIDING WINDOW for input images
     logic start_sliding_window; // Control signal to start the sliding window operation
     logic valid_in_sliding_window; // Valid signal for the sliding window input
-    logic int8_t a0_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
-    logic int8_t a1_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
-    logic int8_t a2_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
-    logic int8_t a3_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
+    int8_t a0_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
+    int8_t a1_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
+    int8_t a2_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
+    int8_t a3_IN_KERNEL [3:0]; // Assuming 4 input channels for the sliding window
     logic valid_IN_KERNEL_A0;
     logic valid_IN_KERNEL_A1;
     logic valid_IN_KERNEL_A2;
     logic valid_IN_KERNEL_A3;
 
-    logic int32_t IN_KERNAL_WINDOW_A0; //input for the sliding window operation
-    logic int32_t IN_KERNAL_WINDOW_A1; //input for the sliding window operation
-    logic int32_t IN_KERNAL_WINDOW_A2; //input for the sliding window operation
-    logic int32_t IN_KERNAL_WINDOW_A3; //input for the sliding window operation
+     int32_t IN_KERNAL_WINDOW_A0; //input for the sliding window operation
+     int32_t IN_KERNAL_WINDOW_A1; //input for the sliding window operation
+     int32_t IN_KERNAL_WINDOW_A2; //input for the sliding window operation
+     int32_t IN_KERNAL_WINDOW_A3; //input for the sliding window operation
 
 
     logic done_IN_KERNEL; // Signal indicating the sliding window operation is done
@@ -255,7 +246,7 @@ logic 				           bypass_maxpool;
         .clk(clk)
         ,.reset(reset)
         ,.start(start_sliding_window)
-        ,.valid(valid_in_sliding_window)
+        ,.valid_in(valid_in_sliding_window)
         ,.A0_in(IN_KERNAL_WINDOW_A0)
         ,.A1_in(IN_KERNAL_WINDOW_A1)
         ,.A2_in(IN_KERNAL_WINDOW_A2)
@@ -269,7 +260,7 @@ logic 				           bypass_maxpool;
         ,.valid_A2(valid_IN_KERNEL_A2)
         ,.valid_A3(valid_IN_KERNEL_A3)
         ,.done(done_IN_KERNEL)
-    )
+    );
 
 
 
@@ -282,15 +273,16 @@ logic 				           bypass_maxpool;
 
     logic WEIGHT_READ_EN;
     logic [($clog2(16384))-1:0] weight_rom_addr; // Assuming 16384 is the depth of the weight ROM
-    logic int32_t weight_rom_dout0; // Output data from the weight ROM
-    logic int32_t weight_rom_dout1; // Output data from the weight ROM
-    logic int32_t weight_rom_dout2; // Output data from the weight ROM
-    logic int32_t weight_rom_dout3; // Output data from the weight ROM
+     int32_t weight_rom_dout0; // Output data from the weight ROM
+     int32_t weight_rom_dout1; // Output data from the weight ROM
+     int32_t weight_rom_dout2; // Output data from the weight ROM
+     int32_t weight_rom_dout3; // Output data from the weight ROM
 
+    assign WEIGHT_READ_EN = read_weights; // Control signal to enable reading from weight ROM
     // ROM for weights, assuming 16 8-bit values per read
     weight_rom 
     #(
-        .D_WIDTH(128) // 4 8-bit pixels per read/write
+        .WIDTH(128) // 4 8-bit pixels per read/write
         , .DEPTH(16384) // Assuming IMG_W and IMG_H are defined in the module scope
         , .INIT_FILE("../fakemodel/tflite_conv_kernel_weights.hex") // No initialization file specified
     )
@@ -312,16 +304,16 @@ logic 				           bypass_maxpool;
         ,.reset(reset)
         ,.incr_ptr(INCR_WEIGHT_PTR) // Assuming this is the control signal to increment the pointer
         ,.ptr(weight_rom_addr) // Output pointer for reading from weight_rom
-     )
+     );
 
     //======================================================================================================
 
     logic valid_in_sliding_window_weights; // Valid signal for the sliding window input for weights
 
-    logic int8_t weight_C0 [3:0]; // Assuming 4 input channels for the sliding window weights
-    logic int8_t weight_C1 [3:0]; // Assuming 4 input channels for the sliding window weights
-    logic int8_t weight_C2 [3:0]; // Assuming 4 input channels for the sliding window weights
-    logic int8_t weight_C3 [3:0]; // Assuming 4 input channels for the sliding window weights
+     int8_t weight_C0 [3:0]; // Assuming 4 input channels for the sliding window weights
+     int8_t weight_C1 [3:0]; // Assuming 4 input channels for the sliding window weights
+     int8_t weight_C2 [3:0]; // Assuming 4 input channels for the sliding window weights
+     int8_t weight_C3 [3:0]; // Assuming 4 input channels for the sliding window weights
     logic valid_C0; // Valid signal for weight_C0
     logic valid_C1; // Valid signal for weight_C1
     logic valid_C2; // Valid signal for weight_C2
@@ -332,7 +324,7 @@ logic 				           bypass_maxpool;
         .clk(clk)
         ,.reset(reset)
         ,.start(start_sliding_window)
-        ,.valid(valid_in_sliding_window_weights)
+        ,.valid_in(valid_in_sliding_window_weights)
         ,.A0_in(weight_rom_dout0)
         ,.A1_in(weight_rom_dout1)
         ,.A2_in(weight_rom_dout2)
@@ -353,11 +345,20 @@ logic 				           bypass_maxpool;
     // Control signals for writing and reading if layer index lsb is 0 or 1
     assign ram_A_we = ~layer_idx[0] & array_out_valid; // Example logic to control write enable for tensor_ram A based on layer_idx
     assign ram_B_we = layer_idx[0] & array_out_valid; // Example logic to control write enable for tensor_ram B based on layer_idx
-
-    assign IN_KERNAL_WINDOW_A0 = layer_idx[0] ? tensor_ram_B_dout0 : tensor_ram_A_dout0; // Example logic to select input for sliding window A0
-    assign IN_KERNAL_WINDOW_A1 = layer_idx[0] ? tensor_ram_B_dout1 : tensor_ram_A_dout1; // Example logic to select input for sliding window A1
-    assign IN_KERNAL_WINDOW_A2 = layer_idx[0] ? tensor_ram_B_dout2 : tensor_ram_A_dout2; // Example logic to select input for sliding window A2
-    assign IN_KERNAL_WINDOW_A3 = layer_idx[0] ? tensor_ram_B_dout3 : tensor_ram_A_dout3; // Example logic to select input for sliding window A3
+    always_comb begin
+        if(read_inputs) begin
+        IN_KERNAL_WINDOW_A0 = layer_idx[0] ? tensor_ram_B_dout0 : tensor_ram_A_dout0; // Example logic to select input for sliding window A0
+        IN_KERNAL_WINDOW_A1 = layer_idx[0] ? tensor_ram_B_dout1 : tensor_ram_A_dout1; // Example logic to select input for sliding window A1
+        IN_KERNAL_WINDOW_A2 = layer_idx[0] ? tensor_ram_B_dout2 : tensor_ram_A_dout2; // Example logic to select input for sliding window A2
+        IN_KERNAL_WINDOW_A3 = layer_idx[0] ? tensor_ram_B_dout3 : tensor_ram_A_dout3; // Example logic to select input for sliding window A3
+        end else begin
+            IN_KERNAL_WINDOW_A0 = 32'b0; // Default value if not reading inputs
+            IN_KERNAL_WINDOW_A1 = 32'b0; // Default value if not reading inputs
+            IN_KERNAL_WINDOW_A2 = 32'b0; // Default value if not reading inputs
+            IN_KERNAL_WINDOW_A3 = 32'b0; // Default value if not reading inputs
+        end
+    end
+     
 
     //======================================================================================================
 

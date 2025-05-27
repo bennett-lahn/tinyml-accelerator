@@ -2,8 +2,8 @@
 
 module maxpool_unit #(
   parameter  int SA_N          = 4               // Scratch array dimension; same as columns of STA, # of requant units
-  ,parameter int MAX_N         = 512             // Max matrix dimension calculated
-  ,parameter int N_BITS        = $clog2(MAX_N+1) // Bits to hold mat_size & coords
+  ,parameter int MAX_N         = 64              // Max matrix dimension calculated
+  ,parameter int N_BITS        = $clog2(MAX_N) // Bits to hold mat_size & coords
   ,parameter int FILTER_H      = 2               // Pooling window height
   ,parameter int FILTER_W      = 2               // Pooling window width
 ) (

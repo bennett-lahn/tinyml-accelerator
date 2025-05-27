@@ -11,7 +11,7 @@ module requantize_scale_rom #(
 );
 
   // ROM storage
-  logic [DATA_WIDTH-1:0] rom [NUM_LAYERS];
+  logic [MULT_WIDTH+SHIFT_WIDTH-1:0] rom [NUM_LAYERS];
 
   // Synchronous read
   always_ff @(posedge clk) begin

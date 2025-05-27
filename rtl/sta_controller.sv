@@ -2,6 +2,7 @@
 
 module sta_controller #(
   parameter int MAX_N     = 64                  // Max matrix dimension for output_coordinator
+  ,parameter int N_BITS = $clog2(MAX_N)
   ,parameter int MAX_NUM_CH  = 64                   // Max number of channels in a layer
   ,parameter int CH_BITS     = $clog2(MAX_NUM_CH+1) // Bits to hold channel number
 )(
@@ -11,14 +12,14 @@ module sta_controller #(
   ,input  logic stall
   ,input  logic bypass_maxpool
 
-  // Inputs for Output Coordinator (to start/define a block computation)
-  ,input  logic [$clog2(MAX_N+1)-1:0]   controller_pos_row            // Base row for the output block
-  ,input  logic [$clog2(MAX_N+1)-1:0]   controller_pos_col            // Base col for the output block
+  // Inputs for Output Coorditor (to start/define a block computation)
+  ,input  logic [$clog2(MAX_N)-1:0]   controller_pos_row            // Base row for the output block
+  ,input  logic [$clog2(MAX_N)-1:0]   controller_pos_col            // Base col for the output block
   ,input  logic                         pe_mask [SA_N*SA_N]           // 1 means the PE is active for the current tile
   ,input  logic                         done                          // Signal from layer controller indicating computation is done
 
   // Inputs for requantization controller
-  ,input  logic                         layer_idx                     // Index of new layer for computation
+  ,input  logic [2:0]                        layer_idx                     // Index of new layer for computation
 
   // Inputs for systolic array
   // Systolic array controller assumes all inputs are already properly buffered/delayed for correct computation
@@ -40,8 +41,8 @@ module sta_controller #(
   ,output logic                         idle                          // High if STA complex is idle
   ,output logic                         array_out_valid               // High if corresponding val/row/col is valid
   ,output logic [127:0]                 array_val_out                 // Value out of max pool unit
-  ,output logic [$clog2(MAX_N+1)-1:0]   array_row_out                 // Row for corresponding value
-  ,output logic [$clog2(MAX_N+1)-1:0]   array_col_out                 // Column for corresponding value
+  ,output logic [$clog2(MAX_N)-1:0]   array_row_out                 // Row for corresponding value
+  ,output logic [$clog2(MAX_N)-1:0]   array_col_out                 // Column for corresponding value
 );
 
   // Internal dimensions for the 4x4 Systolic Array
@@ -50,7 +51,7 @@ module sta_controller #(
   localparam int SA_TILE_SIZE      = 1;  // Tile size for STA (passed to STA instance)
 
   // Outputs from the controller - Flattened 1D Unpacked Arrays (per PE)
-  localparam int CTRL_N_BITS = $clog2(MAX_N+1); // For coordinate width
+  localparam int CTRL_N_BITS = $clog2(MAX_N); // For coordinate width
   localparam int TOTAL_PES = SA_N * SA_N;          // Total PEs in the SA_N x SA_N array
 
   // Intermediate 2D arrays for unpacked inputs to STA (internal representation)
@@ -152,13 +153,13 @@ module sta_controller #(
   logic                       maxpool_idle;             // High if maxpool unit is idle
   logic                       requant_out_valid [SA_N]; // High if corresponding val/row/col is valid
   int8_t                      requant_val_out   [SA_N]; // Value out of each requant unit
-  logic [$clog2(MAX_N+1)-1:0] requant_row_out   [SA_N]; // Row for corresponding value
-  logic [$clog2(MAX_N+1)-1:0] requant_col_out   [SA_N]; // Column for corresponding value
+  logic [$clog2(MAX_N)-1:0] requant_row_out   [SA_N]; // Row for corresponding value
+  logic [$clog2(MAX_N)-1:0] requant_col_out   [SA_N]; // Column for corresponding value
   
   logic                       maxpool_out_valid;
   int8_t                      maxpool_val_out;
-  logic [$clog2(MAX_N+1)-1:0] maxpool_row_out;
-  logic [$clog2(MAX_N+1)-1:0] maxpool_col_out;
+  logic [$clog2(MAX_N)-1:0] maxpool_row_out;
+  logic [$clog2(MAX_N)-1:0] maxpool_col_out;
 
   // Reads input from STA as they become valid and requantizes them, 1 value per column of STA at a time
   // Supports SA_N simultaneous reads from each STA column per cycle, but only one requant operation per cycle 
@@ -208,11 +209,30 @@ module sta_controller #(
   logic [1:0] current_chunk;  // 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right
   logic current_chunk_complete;
   
-  // Registered outputs
+  // Registered outpu
   logic array_out_valid_reg;
   logic [127:0] array_val_out_reg;
-  logic [$clog2(MAX_N+1)-1:0] array_row_out_reg;
-  logic [$clog2(MAX_N+1)-1:0] array_col_out_reg;
+  logic [$clog2(MAX_N)-1:0] array_row_out_reg;
+  logic [$clog2(MAX_N)-1:0] array_col_out_reg;
+
+  logic [N_BITS-1:0] rel_col;
+  logic [N_BITS-1:0] rel_row;
+  logic [N_BITS-1:0] base_row;
+  logic [N_BITS-1:0] base_col;
+
+  always_comb begin
+    // Max pool mode: 2x2 chunks fill 4x4 buffer in specific order
+    // Determine target position in 4x4 buffer based on current chunk
+    case (current_chunk)
+      2'b00: begin base_row = 0; base_col = 0; end  // Top-left
+      2'b01: begin base_row = 0; base_col = 2; end  // Top-right  
+      2'b10: begin base_row = 2; base_col = 0; end  // Bottom-left
+      2'b11: begin base_row = 2; base_col = 2; end  // Bottom-right
+    endcase
+
+    rel_row = maxpool_row_out - controller_pos_row;
+    rel_col = maxpool_col_out - controller_pos_col;
+  end
 
   // Collect results into buffer until all outputs are ready, then output as 128-bit vector
   always_ff @(posedge clk) begin
@@ -242,30 +262,19 @@ module sta_controller #(
         // Direct mode: Requantized output goes directly to 4x4 buffer
         for (int i = 0; i < SA_N; i++) begin
           for (int j = 0; j < SA_N; j++) begin
-            if (requant_out_valid[i] && requant_col_out[i] == controller_pos_col + j) begin
+            if (requant_out_valid[i] && requant_col_out[i] == N_BITS'(controller_pos_col + j)) begin
               output_buffer_valid[i][j] <= 1'b1;
               output_buffer[i][j] <= requant_val_out[i];
             end
           end
         end
       end else begin
-        // Max pool mode: 2x2 chunks fill 4x4 buffer in specific order
-        // Determine target position in 4x4 buffer based on current chunk
-        int base_row, base_col;
-        case (current_chunk)
-          2'b00: begin base_row = 0; base_col = 0; end  // Top-left
-          2'b01: begin base_row = 0; base_col = 2; end  // Top-right  
-          2'b10: begin base_row = 2; base_col = 0; end  // Bottom-left
-          2'b11: begin base_row = 2; base_col = 2; end  // Bottom-right
-        endcase
         
         // Max pool outputs 2x2, map to appropriate chunk in 4x4 buffer
         if (maxpool_out_valid) begin
-          int rel_row = maxpool_row_out - controller_pos_row;
-          int rel_col = maxpool_col_out - controller_pos_col;
-          if (rel_row >= 0 && rel_row < 2 && rel_col >= 0 && rel_col < 2) begin
-            output_buffer_valid[base_row + rel_row][base_col + rel_col] <= 1'b1;
-            output_buffer[base_row + rel_row][base_col + rel_col] <= maxpool_val_out;
+          if (rel_row < 2 && rel_col < 2) begin
+            output_buffer_valid[2'(base_row + rel_row)][2'(base_col + rel_col)] <= 1'b1;
+            output_buffer[2'(base_row + rel_row)][2'(base_col + rel_col)] <= maxpool_val_out;
           end
         end
         // Advance to next chunk when current chunk is complete
@@ -301,19 +310,10 @@ module sta_controller #(
   always_comb begin        
     current_chunk_complete = 1'b1;
     
-    // Determine base position for current chunk
-    int base_row, base_col;
-    case (current_chunk)
-      2'b00: begin base_row = 0; base_col = 0; end  // Top-left
-      2'b01: begin base_row = 0; base_col = 2; end  // Top-right  
-      2'b10: begin base_row = 2; base_col = 0; end  // Bottom-left
-      2'b11: begin base_row = 2; base_col = 2; end  // Bottom-right
-    endcase
-    
     // Check if all positions in current 2x2 chunk are valid
     for (int i = 0; i < 2; i++) begin
       for (int j = 0; j < 2; j++) begin
-        current_chunk_complete &= output_buffer_valid[base_row + i][base_col + j];
+        current_chunk_complete &= output_buffer_valid[2'(base_row + 6'(i))][2'(base_col + 6'(j))];
       end
     end
   end

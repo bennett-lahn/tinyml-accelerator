@@ -7,7 +7,7 @@ module requantize_controller #(
   ,parameter int SPECIAL_LAYER_IDX = 7   // layer that uses special zero-point
   ,parameter int MULT_WIDTH        = 32  // bit-width for multipliers
   ,parameter int SHIFT_WIDTH       = 6   // bit-width for shifts
-  ,parameter int MAX_N             = 16  // Max rows/cols in buffer
+  ,parameter int MAX_N             = 64  // Max rows/cols in buffer
   ,parameter int N_BITS            = $clog2(MAX_N)
 )(
   input   logic                                  clk
@@ -26,7 +26,11 @@ module requantize_controller #(
   ,output logic              idle
   ,output logic              out_valid [SA_N]
   ,output logic [N_BITS-1:0] out_row   [SA_N]
+<<<<<<< HEAD
   ,output logic [$clog2(MAX_N)-1:0] out_col   [SA_N]
+=======
+  ,output logic [N_BITS-1:0] out_col   [SA_N]
+>>>>>>> 6b993d8d01180447ccf38fe9051f9d4b5199cfa3
   ,output int8_t             out_data  [SA_N]
 );
 
@@ -58,13 +62,13 @@ module requantize_controller #(
   end
 
   generate
-    for (genvar ch = 0; ch < SA_N; ch++) begin : BUF
+    for (genvar ch = 0; ch < SA_N; ch++) begin : ARRAY_BUFFER
       array_output_buffer #(
         .MAX_N  (MAX_N)
         ,.N_BITS (N_BITS)
         ,.NUM_WRITE_PORTS(SA_N)
         ,.MAX_BUFFER_ENTRIES(SA_N)
-      ) buf_inst (
+      ) array_buffer_inst (
         .clk          (clk)
         ,.reset       (reset)
         ,.in_valid    (buf_in_valid[ch])
@@ -88,7 +92,6 @@ module requantize_controller #(
 
   requantize_scale_rom #(
     .NUM_LAYERS      (NUM_LAYERS)
-    ,.MISC_LAYER_IDX (MISC_LAYER_IDX)
     ,.MULT_WIDTH     (MULT_WIDTH)
     ,.SHIFT_WIDTH    (SHIFT_WIDTH)
   ) scale_rom_inst (
@@ -102,11 +105,12 @@ module requantize_controller #(
   // === Shared quantization parameters for all channels ===
   logic choose_zero_point;
 
-  assign choose_zero_point = (layer_idx == SPECIAL_LAYER_IDX);
+  assign choose_zero_point = (layer_idx == SPECIAL_LAYER_IDX[2:0]);
 
   // === Requantize/Activate Units and Control ===
+  genvar ch;
   generate
-    for (ch = 0; ch < SA_N; ch++) begin : QUANT
+    for (ch = 0; ch < SA_N; ch++) begin : QUANTIZE_UNIT
       // Connect buffer output to quant unit
       requantize_activate_unit #(
         .QMIN(-128)
