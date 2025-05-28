@@ -52,7 +52,7 @@ module maxpool_unit #(
   int8_t                    comb_out_data;
 
   // Read incoming samples into scratch
-  always_ff @(posedge clk or posedge reset) begin
+  always_ff @(posedge clk) begin
     if (reset) begin
       for (int r = 0; r < SA_N; r++) begin
         for (int c = 0; c < SA_N; c++)

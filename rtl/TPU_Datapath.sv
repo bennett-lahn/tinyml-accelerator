@@ -15,14 +15,25 @@ module TPU_Datapath #(
     ,input logic reset
     ,input logic read_weights
     ,input logic read_inputs
+    ,input logic read_bias
+    ,input logic load_bias
+    ,input logic incr_weight_ptr
+    ,input logic incr_bias_ptr
+    ,input logic incr_input_ptr
+    ,input logic reset_sta
     ,input logic start
     ,input logic done
+    ,input logic reset_ptr_A
+    ,input logic reset_ptr_B
+    ,input logic reset_ptr_weight
+    ,input logic reset_ptr_bias
 );
 
+logic done_all_sliding_windows;
 // STA Controller signals
 logic stall;
 
-logic                          load_bias;                    // Single load_bias control signal
+// logic                          load_bias;                    // Single load_bias control signal
 int32_t                        bias_value;                  // Single bias value to be used for all PEs
 
 logic                          idle;                          // High if STA complex is idle
@@ -34,13 +45,13 @@ logic [$clog2(MAX_N)-1:0]    array_col_out;                 // Column for corres
 // logic                          start;       // Pulse to begin sequence
 logic					       sta_idle;    // STA signals completion of current tile
 // logic                          done;        // Signals completion of current tile computation
-
+logic                          sta_done_computing;
 // Current layer and channel index
 logic [$clog2(NUM_LAYERS)-1:0] layer_idx; // Index of current layer
 logic [$clog2(MAX_NUM_CH)-1:0] chnnl_idx; // Index of current output channel / filter
 
 // Drive STA controller and memory conv parameters
-logic                          reset_sta;
+// logic                          reset_sta;
 logic [15:0]                   mat_size;
 logic                          start_compute;
 logic [$clog2(MAX_N)-1:0]      controller_pos_row;
@@ -75,11 +86,12 @@ logic 				           bypass_maxpool;
     //     ,.num_filters(num_filters)
     //     ,.num_input_channels(num_input_channels)
     // );
+    assign layer_idx = 0;
 
     sta_controller sta_controller (
         .clk(clk)
         ,.reset(reset)
-        ,.reset_sta('0)
+        ,.reset_sta(reset_sta)
         // Inputs to sta_controller
         ,.stall('0)
         ,.bypass_maxpool('0)
@@ -95,11 +107,12 @@ logic 				           bypass_maxpool;
         ,.B1(weight_C1)
         ,.B2(weight_C2)
         ,.B3(weight_C3)
-        ,.load_bias('0)
-        ,.bias_value('0) // Assuming bias_value is a 32-bit value, adjust as needed
+        ,.load_bias(load_bias)
+        ,.bias_value(bias_rom_dout) // Assuming bias_value is a 32-bit value, adjust as needed
 
         // Outputs from sta_controller
         ,.idle(idle)
+        ,.sta_idle(sta_idle)
         ,.array_out_valid(array_out_valid)
         ,.array_val_out(array_val_out)
         ,.array_row_out(array_row_out)
@@ -177,6 +190,7 @@ logic 				           bypass_maxpool;
 
 
 
+
     //======================================================================================================
     logic  incr_ptr_A; // Pointer for reading from tensor_ram A
     pointer 
@@ -187,6 +201,8 @@ logic 				           bypass_maxpool;
     (
         .clk(clk)
         ,.reset(reset)
+        ,.reset_ptr(reset_ptr_A)
+        ,.rst_ptr_val(0)
         ,.incr_ptr(incr_ptr_A) // Assuming this is the control signal to increment the pointer
         ,.ptr(ram_A_addr_r) // Output pointer for reading from tensor_ram A
     );
@@ -200,6 +216,8 @@ logic 				           bypass_maxpool;
     (
         .clk(clk)
         ,.reset(reset)
+        ,.reset_ptr(reset_ptr_B)
+        ,.rst_ptr_val(0)
         ,.incr_ptr(incr_ptr_B) // Assuming this is the control signal to increment the pointer
         ,.ptr(ram_B_addr_r) // Output pointer for reading from tensor_ram B
     );
@@ -220,23 +238,23 @@ logic 				           bypass_maxpool;
     logic valid_IN_KERNEL_A2;
     logic valid_IN_KERNEL_A3;
 
-     int32_t IN_KERNAL_WINDOW_A0; //input for the sliding window operation
-     int32_t IN_KERNAL_WINDOW_A1; //input for the sliding window operation
-     int32_t IN_KERNAL_WINDOW_A2; //input for the sliding window operation
-     int32_t IN_KERNAL_WINDOW_A3; //input for the sliding window operation
+     int32_t IN_KERNEL_WINDOW_A0; //input for the sliding window operation
+     int32_t IN_KERNEL_WINDOW_A1; //input for the sliding window operation
+     int32_t IN_KERNEL_WINDOW_A2; //input for the sliding window operation
+     int32_t IN_KERNEL_WINDOW_A3; //input for the sliding window operation
 
 
     logic done_IN_KERNEL; // Signal indicating the sliding window operation is done
     sliding_window IN_KERNELS
     (
         .clk(clk)
-        ,.reset(reset)
+        ,.reset(reset|reset_sta)
         ,.start(start_sliding_window)
         ,.valid_in(valid_in_sliding_window)
-        ,.A0_in(IN_KERNAL_WINDOW_A0)
-        ,.A1_in(IN_KERNAL_WINDOW_A1)
-        ,.A2_in(IN_KERNAL_WINDOW_A2)
-        ,.A3_in(IN_KERNAL_WINDOW_A3)
+        ,.A0_in(IN_KERNEL_WINDOW_A0)
+        ,.A1_in(IN_KERNEL_WINDOW_A1)
+        ,.A2_in(IN_KERNEL_WINDOW_A2)
+        ,.A3_in(IN_KERNEL_WINDOW_A3)
         ,.A0(a0_IN_KERNEL)
         ,.A1(a1_IN_KERNEL)
         ,.A2(a2_IN_KERNEL)
@@ -284,10 +302,13 @@ logic 				           bypass_maxpool;
     );
 
     logic INCR_WEIGHT_PTR; // Control signal to increment the weight pointer
+    // logic reset_ptr_weight;
     pointer weight_pointer
      (
         .clk(clk)
         ,.reset(reset)
+        ,.reset_ptr(reset_ptr_weight)
+        ,.rst_ptr_val(0)
         ,.incr_ptr(INCR_WEIGHT_PTR) // Assuming this is the control signal to increment the pointer
         ,.ptr(weight_rom_addr) // Output pointer for reading from weight_rom
      );
@@ -308,7 +329,7 @@ logic 				           bypass_maxpool;
     sliding_window WEIGHTS_IN
     (  
         .clk(clk)
-        ,.reset(reset)
+        ,.reset(reset|reset_sta)
         ,.start(start_sliding_window)
         ,.valid_in(valid_in_sliding_window_weights)
         ,.A0_in(weight_rom_dout0)
@@ -327,27 +348,95 @@ logic 				           bypass_maxpool;
     );
 
     //======================================================================================================
+    //Bias ROM
+
+    logic BIAS_READ_EN;
+    logic [($clog2(256))-1:0] bias_rom_addr;
+    logic [31:0] bias_rom_dout;
+
+    assign BIAS_READ_EN = read_bias;
+    bias_rom
+    #(
+        .WIDTH(32)
+        ,.DEPTH(256)
+        ,.INIT_FILE("../fakemodel/tflite_bias_weights.hex")
+    )
+    BIAS_ROM
+    (
+        .clk(clk)
+        ,.read_enable(BIAS_READ_EN)
+        ,.addr(bias_rom_addr)
+        ,.bias_out(bias_rom_dout)
+    );
+
+    logic INCR_BIAS_PTR;
+    // logic reset_ptr_bias;
+    pointer 
+    #(
+        .DEPTH(256)
+    )
+    BIAS_POINTER
+    (
+        .clk(clk)
+        ,.reset(reset)
+        ,.reset_ptr(reset_ptr_bias)
+        ,.rst_ptr_val(0)
+        ,.incr_ptr(INCR_BIAS_PTR)
+        ,.ptr(bias_rom_addr)
+    );
+
+     //======================================================================================================
 
     // Control signals for writing and reading if layer index lsb is 0 or 1
-    assign ram_A_we = ~layer_idx[0] & array_out_valid; // Example logic to control write enable for tensor_ram A based on layer_idx
-    assign ram_B_we = layer_idx[0] & array_out_valid; // Example logic to control write enable for tensor_ram B based on layer_idx
+    assign ram_A_we = layer_idx[0] & array_out_valid; // Example logic to control write enable for tensor_ram A based on layer_idx
+    assign ram_B_we = ~layer_idx[0] & array_out_valid; // Example logic to control write enable for tensor_ram B based on layer_idx
     always_comb begin
         if(read_inputs) begin
-        IN_KERNAL_WINDOW_A0 = layer_idx[0] ? tensor_ram_B_dout0 : tensor_ram_A_dout0; // Example logic to select input for sliding window A0
-        IN_KERNAL_WINDOW_A1 = layer_idx[0] ? tensor_ram_B_dout1 : tensor_ram_A_dout1; // Example logic to select input for sliding window A1
-        IN_KERNAL_WINDOW_A2 = layer_idx[0] ? tensor_ram_B_dout2 : tensor_ram_A_dout2; // Example logic to select input for sliding window A2
-        IN_KERNAL_WINDOW_A3 = layer_idx[0] ? tensor_ram_B_dout3 : tensor_ram_A_dout3; // Example logic to select input for sliding window A3
+        IN_KERNEL_WINDOW_A0 = layer_idx[0] ? tensor_ram_B_dout0 : tensor_ram_A_dout0; // Example logic to select input for sliding window A0
+        IN_KERNEL_WINDOW_A1 = layer_idx[0] ? tensor_ram_B_dout1 : tensor_ram_A_dout1; // Example logic to select input for sliding window A1
+        IN_KERNEL_WINDOW_A2 = layer_idx[0] ? tensor_ram_B_dout2 : tensor_ram_A_dout2; // Example logic to select input for sliding window A2
+        IN_KERNEL_WINDOW_A3 = layer_idx[0] ? tensor_ram_B_dout3 : tensor_ram_A_dout3; // Example logic to select input for sliding window A3
         end else begin
-            IN_KERNAL_WINDOW_A0 = 32'b0; // Default value if not reading inputs
-            IN_KERNAL_WINDOW_A1 = 32'b0; // Default value if not reading inputs
-            IN_KERNAL_WINDOW_A2 = 32'b0; // Default value if not reading inputs
-            IN_KERNAL_WINDOW_A3 = 32'b0; // Default value if not reading inputs
+            IN_KERNEL_WINDOW_A0 = 32'b0; // Default value if not reading inputs
+            IN_KERNEL_WINDOW_A1 = 32'b0; // Default value if not reading inputs
+            IN_KERNEL_WINDOW_A2 = 32'b0; // Default value if not reading inputs
+            IN_KERNEL_WINDOW_A3 = 32'b0; // Default value if not reading inputs
+        end
+
+        if(layer_idx[0] == 0) begin
+            tensor_ram_B_din = array_out_valid ? array_val_out : 128'b0;
+            tensor_ram_A_din = 128'b0;
+        end else begin
+            tensor_ram_A_din = array_out_valid ? array_val_out : 128'b0;
+            tensor_ram_B_din = 128'b0;
         end
     end
+
+    always_ff @(posedge clk) begin
+        if(layer_idx[0] == 0 && array_out_valid) begin
+            ram_A_addr_w <= ram_A_addr_w+1;
+            ram_B_addr_w <= 0;
+        end else if(layer_idx[0] == 1 && array_out_valid) begin
+            ram_A_addr_w <= 0;
+            ram_B_addr_w <= ram_B_addr_w+1;
+        end
+    end    
+        
+
+
      
+    
 
     //======================================================================================================
 
     assign start_sliding_window = start; // Control signal to start the sliding window operation
+    assign INCR_WEIGHT_PTR = incr_weight_ptr;
+    assign INCR_BIAS_PTR = incr_bias_ptr;
+    assign incr_ptr_A = incr_input_ptr;
+    assign incr_ptr_B = incr_input_ptr;
+    
+    assign done_all_sliding_windows = done_IN_KERNEL & done_WEIGHTS;
 
+    assign sta_done_computing = done_all_sliding_windows & sta_idle;
+    //======================================================================================================
 endmodule

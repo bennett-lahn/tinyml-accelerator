@@ -41,6 +41,7 @@ module tensor_ram #(
 
     //never writing or reading to the same memory location :)
     always_ff @(posedge clk) begin
+          //$display("Memory at address 0: %h", ram[0]);
         if (we) begin
             ram[addr_w] <= din;
         end

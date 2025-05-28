@@ -8,7 +8,7 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
     and writes them to separate .hex files in Keras layer order.
     - Conv2D kernels: row-major, 16 values (32 hex chars) per line, no spaces. Scales/ZPs comments removed in their hex file.
     - Dense kernels: row-major, one hex byte per line. Scales/ZPs comments included.
-    - Biases: int32 written as 4 hex bytes (little-endian), one hex byte per line. Scales/ZPs comments included.
+    - Biases: int32, each 32-bit value on one line as 8 hex characters. Scales/ZPs comments included.
     """
     if not os.path.exists(tflite_model_path):
         print(f"Error: TFLite model file not found at {tflite_model_path}")
@@ -31,7 +31,6 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
             is_a_qconst_tensor = name_lower.startswith("tfl.pseudo_qconst")
 
             if is_a_qconst_tensor and detail['quantization_parameters']['scales'].size > 0:
-                # Storing all extracted qconst tensors
                 tflite_int8_weights_for_rom[detail['name']] = {
                     'weights': interpreter.get_tensor(detail['index']), 
                     'original_shape': detail['shape'], 
@@ -49,19 +48,6 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
 
     print(f"\nSuccessfully extracted {len(tflite_int8_weights_for_rom)} constant 'tfl.pseudo_qconst' tensors.")
 
-    # --- Define Keras layer order for TFLite tensors ---
-    # This order is based on previous inspection of a similar model's TFLite output.
-    # It assumes TFLite names its constant tensors tfl.pseudo_qconst, tfl.pseudo_qconst1, ...
-    # in a somewhat reverse order of Keras layers, or grouped by operation.
-    # Keras Layer Order: conv1, conv2, conv3, conv4, dense1, output_softmax
-    # Each layer has kernel then bias.
-    
-    # This list should contain the TFLite tensor names in the desired output order.
-    # (Kernel, Bias for Layer 1), (Kernel, Bias for Layer 2), ...
-    # Based on typical TFLite output where 'tfl.pseudo_qconst' is often the last bias
-    # and 'tfl.pseudo_qconstN' with higher N are earlier layers.
-    # Adjust this list if your TFLite naming/ordering differs.
-    # This specific order was derived from your previous successful extraction output.
     ordered_tflite_tensor_names = [
         "tfl.pseudo_qconst11", # conv1 kernel
         "tfl.pseudo_qconst10", # conv1 bias
@@ -77,14 +63,12 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
         "tfl.pseudo_qconst"    # output_softmax bias
     ]
 
-    # Verify all ordered names are present in the extracted tensors
     missing_tensors = [name for name in ordered_tflite_tensor_names if name not in tflite_int8_weights_for_rom]
     if missing_tensors:
         print(f"Error: The following TFLite tensor names defined in 'ordered_tflite_tensor_names' were not found in the extracted tensors: {missing_tensors}")
         print("Please verify the TFLite tensor names and their mapping to Keras layers.")
         return
 
-    # --- Writing Extracted TFLite Weights and Biases to Separate .hex files ---
     print("\n--- Writing Extracted TFLite Weights and Biases to Separate .hex files (Keras Layer Order) ---")
     output_conv_kernels_hex_file = "tflite_conv_kernel_weights.hex"
     output_dense_kernels_hex_file = "tflite_dense_kernel_weights.hex"
@@ -100,21 +84,20 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
         
         f_conv_k.write("# Conv2D Kernel Weights (int8) - Keras Layer Order. Stored as 4x4 planes, row-major flattened, 16 values (32 hex chars) per line, no spaces. Scales/ZPs handled separately by hardware.\n")
         f_dense_k.write("# Dense Kernel Weights (int8) - Keras Layer Order. Stored row-major flattened, one hex byte per line\n")
-        f_biases.write("# Bias Weights (Typically int32 from TFLite) - Keras Layer Order. Written as bytes, one hex byte per line\n")
+        f_biases.write("# Bias Weights (Typically int32 from TFLite) - Keras Layer Order. Each 32-bit value on one line as 8 hex characters.\n") # Updated comment
 
-        for tensor_name in ordered_tflite_tensor_names: # Iterate in predefined Keras layer order
+        for tensor_name in ordered_tflite_tensor_names: 
             tensor_info = tflite_int8_weights_for_rom[tensor_name]
             weights_data = tensor_info['weights']
             original_shape = list(tensor_info['original_shape']) 
             data_type = tensor_info['dtype']
             
-            if data_type == np.int8: # Kernels/Weights
-                if len(original_shape) == 4 and original_shape[1] == 4 and original_shape[2] == 4: # Conv2D 4x4 kernel
+            if data_type == np.int8: 
+                if len(original_shape) == 4 and original_shape[1] == 4 and original_shape[2] == 4: 
                     conv_kernel_header_comments = (
                         f"# Tensor Name (TFLite): {tensor_name}\n"
                         f"# Original Shape: {original_shape}\n"
                         f"# Dtype: {data_type}\n"
-                        # Scales and Zero Points are intentionally omitted for this file as per user request
                     )
                     f_conv_k.write(conv_kernel_header_comments)
                     num_output_channels = original_shape[0]
@@ -128,7 +111,7 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
                                 continue
                             
                             row_flattened_plane = kernel_plane.flatten(order='C') 
-                            f_conv_k.write(f"# Keras Layer (derived): Conv Kernel Plane - OutputChannel={out_c}, InputChannel={in_c}\n") # Clarify mapping
+                            f_conv_k.write(f"# Keras Layer (derived): Conv Kernel Plane - OutputChannel={out_c}, InputChannel={in_c}\n")
                             
                             hex_chars_for_plane_line = []
                             for val_int8 in row_flattened_plane:
@@ -139,7 +122,7 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
                             f_conv_k.write("".join(hex_chars_for_plane_line) + "\n") 
                             total_conv_kernel_bytes += len(row_flattened_plane)
                     f_conv_k.write("# End Tensor\n\n")
-                elif len(original_shape) == 2: # Dense kernel
+                elif len(original_shape) == 2: 
                     dense_kernel_header_comments = (
                         f"# Tensor Name (TFLite): {tensor_name}\n"
                         f"# Original Shape: {original_shape}\n"
@@ -183,21 +166,18 @@ def extract_and_format_tflite_weights(tflite_model_path="simple_cnn_32x32_quant_
                 )
                 f_biases.write(bias_header_comments)
                 flattened_data = weights_data.flatten()
-                for val_int32 in flattened_data:
+                for val_int32 in flattened_data: # Each val_int32 is one bias value
                     try:
                         python_int_val = int(val_int32)
-                        if python_int_val < -2147483648 or python_int_val > 2147483647:
-                             print(f"Warning: int32 value {python_int_val} for tensor {tensor_name} is out of standard range for 4-byte signed conversion.")
                         
-                        byte_values = python_int_val.to_bytes(4, byteorder='little', signed=True)
-                        for byte_val in byte_values: 
-                            hex_val = format(byte_val & 0xFF, '02x')
-                            f_biases.write(hex_val + "\n")
-                            total_bias_bytes += 1
-                    except OverflowError as oe:
-                        print(f"OverflowError converting value {python_int_val} (from tensor {tensor_name}) to 4 bytes: {oe}. Skipping this value for bias file.")
+                        # Format the 32-bit integer as an 8-character hex string
+                        # (val & 0xFFFFFFFF) ensures correct representation for negative numbers in 2's complement
+                        hex_32bit_value_string = format(python_int_val & 0xFFFFFFFF, '08x')
+                        f_biases.write(hex_32bit_value_string + "\n")
+                        total_bias_bytes += 4 # Each int32 bias value is 4 bytes
+                                                
                     except Exception as e_bytes:
-                        print(f"Error converting value {python_int_val} (from tensor {tensor_name}) to bytes: {e_bytes}. Skipping this value for bias file.")
+                        print(f"Error converting value {python_int_val} (from tensor {tensor_name}) to 32-bit hex: {e_bytes}. Skipping this value for bias file.")
                 f_biases.write("# End Tensor\n\n")
             else:
                 print(f"WARNING: Skipping tensor {tensor_name} for hex output due to unhandled dtype: {data_type}")

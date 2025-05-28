@@ -3,69 +3,40 @@
 // Supports multiple layers with independent channel counts.
 
 module bias_rom #(
-    parameter int NUM_LAYERS                           // Number of CNN layers
-    ,parameter int LAYER_CHANNELS [NUM_LAYERS]         // Number of channels per layer (bias count per layer)
-    ,parameter int BIAS_WIDTH = 32                     // Bit width of each bias value
+    parameter WIDTH = 32             // Number of CNN layers
+    ,parameter DEPTH = 256    
+    ,parameter INIT_FILE = "" // Optional initialization file
 )(
     input  logic clk                                   // Clock for synchronous read
-    ,input  logic                          read_valid  // High if read request is valid
-    ,input  logic [$clog2(NUM_LAYERS)-1:0] layer_sel   // Layer select: selects which layer's bias to access
-    ,input  logic [$clog2(LAYER_CHANNELS[0])-1:0] addr // Address within the selected layer (channel index)
+    ,input  logic                          read_enable  // High if read request is valid
+    ,input  logic [$clog2(DEPTH)-1:0] addr // Address within the selected layer (channel index)
 
-    ,output logic                  out_valid           // High if output value is valid (from valid read request) 
-    ,output logic [BIAS_WIDTH-1:0] bias_out            // bias value at the specified layer and channel
+    ,output logic [WIDTH-1:0] bias_out            // bias value at the specified layer and channel
 );
 
-    // Function: calc_layer_offsets
-    // Description: Computes the starting offset in the bias ROM for each layer.
-    //              Returns an array where offsets[i] is the index of the first
-    //              bias value for layer i.
-    function automatic int calc_layer_offsets(input int channels[]);
-        automatic int offsets[NUM_LAYERS];
-        automatic int cumulative = 0;
-        for (int i = 0; i < NUM_LAYERS; i++) begin
-            offsets[i] = cumulative;
-            cumulative += channels[i];
-        end
-        return offsets;
-      endfunction
 
-    // Localparams: LAYER_OFFSETS, TOTAL_BIASES
-    // Description: 
-    //   - LAYER_OFFSETS: Array of starting indices for each layer's biases.
-    //   - TOTAL_BIASES: Total number of bias values stored in the ROM.
-    localparam int LAYER_OFFSETS [NUM_LAYERS] = calc_layer_offsets(LAYER_CHANNELS);
-    localparam int TOTAL_BIASES = LAYER_OFFSETS[NUM_LAYERS-1] + LAYER_CHANNELS[NUM_LAYERS-1];
+    logic [WIDTH-1:0] rom [0:DEPTH-1];
 
-    // ROM Storage: bias_rom
-    // Description: Synchronous ROM array storing all bias values.
-    //              Initialized from BIAS_VALUES parameter.
-    logic [BIAS_WIDTH-1:0] bias_rom [TOTAL_BIASES];
     initial begin
-        foreach(bias_rom[i]) begin
-            bias_rom[i] = BIAS_VALUES[i];
-        end
-    end
-
-    // Address Calculation
-    // Description: Computes the absolute address in the bias ROM for the
-    //              selected layer and channel index (addr).
-    //              If address is out of bounds, wraps to zero.
-    logic [$clog2(TOTAL_BIASES)-1:0] calc_addr;
-    always_comb begin
-        calc_addr = LAYER_OFFSETS[layer_sel] + addr;
-        if (calc_addr >= TOTAL_BIASES)
-            calc_addr = 0;
-    end
-
-    // Synchronous ROM Read
-    always_ff @(posedge clk) begin
-        if (read_valid) begin
-            out_valid <= 1'b1;
-            bias_out <= bias_rom[calc_addr];
+        if (INIT_FILE != "") begin // Only initialize if a file is specified (using the new parameter)
+            $display("tensor_ram: Initializing RAM from file: %s", INIT_FILE);
+            $readmemh(INIT_FILE, rom);
         end else begin
-            out_valid <= 1'b0;
+            //Default initialization if no file is provided, e.g., all zeros
+            for (int i = 0; i < DEPTH; i++) begin
+                rom[i] = {WIDTH{1'b0}};
+            end
+            $display("tensor_ram: No INIT_FILE specified, RAM not initialized from file by $readmemh.");
         end
     end
 
+    always_ff @(posedge clk) begin
+        if (read_enable) begin
+            bias_out <= rom[addr];
+        end
+        else begin
+            bias_out <= 0;
+        end
+    end
+   
 endmodule

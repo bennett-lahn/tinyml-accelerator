@@ -37,7 +37,8 @@ module sta_controller #(
   ,input  logic                         load_bias                    // Single load_bias control signal
   ,input  int32_t                       bias_value                  // Single bias value to be used for all PEs
 
-  ,output logic                         idle                          // High if STA complex is idle
+  ,output logic                         idle    
+  ,output logic                         sta_idle
   ,output logic                         array_out_valid               // High if corresponding val/row/col is valid
   ,output logic [127:0]                 array_val_out                 // Value out of max pool unit
   ,output logic [$clog2(MAX_N)-1:0]   array_row_out                 // Row for corresponding value
@@ -80,8 +81,9 @@ module sta_controller #(
   end
 
   // Signal from systolic array indicating it's idle
-  logic sta_idle;
+  logic sta_idle_internal;
 
+  assign sta_idle = sta_idle_internal;
   // Systolic array processes convolution inputs from exterior input buffers
   systolic_tensor_array #(
     .N(SA_N), 
@@ -89,7 +91,7 @@ module sta_controller #(
     .VECTOR_WIDTH(SA_VECTOR_WIDTH)
   ) sta_unit (
     .clk(clk)
-    ,.reset(reset)
+    ,.reset(reset|reset_sta)
     ,.stall(stall)
     ,.A0(A0)
     ,.A1(A1)
@@ -111,7 +113,7 @@ module sta_controller #(
     ,.C1(sta_C_outputs[1])
     ,.C2(sta_C_outputs[2])
     ,.C3(sta_C_outputs[3])
-    ,.sta_idle(sta_idle)
+    ,.sta_idle(sta_idle_internal)
   );
 
   // Output coordinator waits for done and idle signals, then outputs all PE results
@@ -121,7 +123,7 @@ module sta_controller #(
     ,.MAX_N(MAX_N)
   ) oc_unit (
     .clk(clk)
-    ,.reset(reset)
+    ,.reset(reset|reset_sta)
     ,.stall(stall) 
     ,.pos_row(controller_pos_row)
     ,.pos_col(controller_pos_col)
@@ -165,7 +167,7 @@ module sta_controller #(
     ,.SA_N(SA_N)
   ) requant_unit (
     .clk(clk)
-    ,.reset(reset_sta)
+    ,.reset(reset|reset_sta)
     ,.layer_idx(layer_idx)
     ,.in_valid(oc_out_valid_flat_internal)
     ,.in_output(requant_array_val)
@@ -184,7 +186,7 @@ module sta_controller #(
     ,.MAX_N(MAX_N)
   ) pool_unit (
     .clk(clk)
-    ,.reset(reset_sta)
+    ,.reset(reset|reset_sta)
     ,.pos_row(controller_pos_row)
     ,.pos_col(controller_pos_col)
     ,.in_valid(requant_out_valid)
