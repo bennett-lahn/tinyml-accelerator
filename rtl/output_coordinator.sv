@@ -55,9 +55,8 @@ module output_coordinator #(
         out_col[flat_idx] = pos_col + N_BITS'(j);
       end
     end
-    
-    // Output coordinator is idle when not in output valid state
-    idle = ~output_valid_state;
+    // Output coordinator is idle when not in output valid state or when systolic array is not idle and done
+    idle = ~output_valid_state & read_array;
   end
 
 endmodule
