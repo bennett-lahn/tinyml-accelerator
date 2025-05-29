@@ -124,7 +124,10 @@ async def test_TPU_Datapath(dut):
         dut.reset_ptr_bias.value = 0
         await tick()
         
-
+    
+    async def counter():
+            dut.counter.value
+            await tick()
     
     async def run_test():
         """Run the test"""
@@ -145,23 +148,10 @@ async def test_TPU_Datapath(dut):
                 dut._log.info("asserting start")
                 while dut.sta_done_computing.value == 0:
                     await tick()
-                    # # Monitor weight ROM outputs
-                    # dut._log.info(f"weight_C0: {dut.weight_C0.value}, weight_C1: {dut.weight_C1.value}, weight_C2: {dut.weight_C2.value}, weight_C3: {dut.weight_C3.value}")
-                    
-                    # # Monitor RAM A outputs
-                    # # Monitor sliding window activation inputs
-                    # dut._log.info(f"a0_IN_KERNEL: {dut.a0_IN_KERNEL.value}, a1_IN_KERNEL: {dut.a1_IN_KERNEL.value}, a2_IN_KERNEL: {dut.a2_IN_KERNEL.value}, a3_IN_KERNEL: {dut.a3_IN_KERNEL.value}")
-                    # # dut._log.info(f"valid_IN_KERNEL_A0: {dut.valid_IN_KERNEL_A0.value}, valid_IN_KERNEL_A1: {dut.valid_IN_KERNEL_A1.value}, valid_IN_KERNEL_A2: {dut.valid_IN_KERNEL_A2.value}, valid_IN_KERNEL_A3: {dut.valid_IN_KERNEL_A3.value}")
-                    # dut._log.info(f"done_IN_KERNEL: {dut.done_IN_KERNEL.value}, done_WEIGHTS: {dut.done_WEIGHTS.value}, sta_idle: {dut.sta_idle.value}")
-                
                 await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
                 dut._log.info("asserting done")
                 while dut.idle.value == 0:
                     await tick()
-                    # dut._log.info(f"sta_idle: {dut.sta_idle.value}")
-                    # dut._log.info(f"oc_idle: {dut.sta_controller.oc_idle.value}")
-                    # dut._log.info(f"requant_idle: {dut.sta_controller.requant_idle.value}")
-                    # dut._log.info(f"maxpool_idle: {dut.sta_controller.maxpool_idle.value}")
                 dut._log.info("idle is high")  
                 await deassert_done()
                 await assert_reset_sta()
@@ -172,81 +162,213 @@ async def test_TPU_Datapath(dut):
             await assert_incr_bias_ptr()
             await assert_incr_weight_ptr()
             await assert_reset_ptr_A()
+        # output channel s
+        for i in range(16):
+            # input channel 1
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # load next weights
+            await assert_incr_weight_ptr()
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # input channel 1
+            await assert_incr_weight_ptr()
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # load next weights
+            await assert_incr_weight_ptr()
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # input channel 1
+            await assert_incr_weight_ptr()
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # load next weights
+            await assert_incr_weight_ptr()
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # input channel 1
+            await assert_incr_weight_ptr()
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # load next weights
+            await assert_incr_weight_ptr()
+            for i in range(16):
+                # tiling
+                # Test with read_weights, read_inputs, write_outputs all set to 1
+                await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
+                dut._log.info("loading values from memory")
+                await tick()
+
+                await assert_bias()
+
+                await assert_start()
+                dut._log.info("asserting start")
+                while dut.sta_done_computing.value == 0:
+                    await tick()
+                await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
+                dut._log.info("asserting done")
+                while dut.idle.value == 0:
+                    await tick()
+                dut._log.info("idle is high")  
+                await deassert_done()
+                await assert_reset_sta()
+                
+                # await assert_incr_bias_ptr()
+                await assert_incr_input_ptr()
+            # load new bias
+            #load new weights
+            # reset back to first input channel
         
-        # # await assert_incr_weight_ptr()
-
-        # await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
-        # dut._log.info("loading values from memory")
-        # await tick()
-
-        # await assert_bias()
-
-        # await assert_start()
-        # dut._log.info("asserting start")
-        # while dut.sta_done_computing.value == 0:
-        #     await tick()
-
-
-        # await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
-        # dut._log.info("asserting done")
-        # while dut.idle.value == 0:
-        #     await tick()
-        # dut._log.info("idle is high")  
-        # await deassert_done()
-        # await assert_reset_sta()
-
-        # await assert_incr_input_ptr()
-        # # await assert_incr_weight_ptr()
-
-        # await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
-        # dut._log.info("loading values from memory")
-        # await tick()
-
-        # await assert_bias()
-
-        # await assert_start()
-        # dut._log.info("asserting start")
-        # while dut.sta_done_computing.value == 0:
-        #     await tick()
-
-
-        # await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
-        # dut._log.info("asserting done")
-        # while dut.idle.value == 0:
-        #     await tick()
-        # dut._log.info("idle is high")  
-        # await deassert_done()
-        # await assert_reset_sta()
+        # layer 2 !!!!
         
-        # await assert_incr_input_ptr()
-        # # await assert_incr_weight_ptr()
-
-        # await apply_inputs(0, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0)
-        # dut._log.info("loading values from memory")
-        # await tick()
-
-        # await assert_bias()
-
-        # await assert_start()
-        # dut._log.info("asserting start")
-        # while dut.sta_done_computing.value == 0:
-        #     await tick()
-
-
-        # await apply_inputs(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1)
-        # dut._log.info("asserting done")
-        # while dut.idle.value == 0:
-        #     await tick()
-        # dut._log.info("idle is high")  
-        # await deassert_done()
-        # await assert_reset_sta()
-        
-
-
-        # Check outputs
-        # assert dut.output_valid.value == 1, "Output valid should be high"
-        # dut._log.info(f"Output data: {dut.output_data.value}")
-    
         # Reset the DUT again
         await reset_dut()
     await run_test()

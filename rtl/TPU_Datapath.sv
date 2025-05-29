@@ -32,7 +32,7 @@ module TPU_Datapath #(
 logic done_all_sliding_windows;
 // STA Controller signals
 logic stall;
-
+logic [1024:0] counter;
 // logic                          load_bias;                    // Single load_bias control signal
 int32_t                        bias_value;                  // Single bias value to be used for all PEs
 

@@ -1,62 +1,75 @@
-
-// 4 32 bit output busses. 16 8 bit pixels per read
-
-//data is stored like such:
-// row0 | row1 | row2 | row3
-//and in each row:
-// pixel0 | pixel1 | pixel2 | pixel3
-// MSB------------------------------LSB
+`include "sys_types.svh"
 
 module tensor_ram #(
-    parameter D_WIDTH = 128, //(4 8 bit pixels per read/write)
-    parameter DEPTH = 96*96,
-    parameter INIT_FILE = ""
+    // Width for wide reads (bits)
+    parameter int READ_WIDTH = 128,
+    // Depth in number of READ_WIDTH‐bit words
+    parameter int DEPTH_WORDS = 1024,
+    // Width for narrow writes (bits)
+    parameter int WRITE_WIDTH = 8,
+    // Initialization file for simulation (hex values per READ_WIDTH word)
+    parameter string INIT_FILE = ""
 ) (
-    input logic clk
-    ,input logic we
-    ,input logic [$clog2(DEPTH)-1:0] addr_w
-    ,input logic [D_WIDTH-1:0] din
-    ,input logic [$clog2(DEPTH)-1:0] addr_r
-    ,output logic [31:0] dout0
-    ,output logic [31:0] dout1
-    ,output logic [31:0] dout2
-    ,output logic [31:0] dout3
+    input  logic                        clk,
+    input  logic                        we,        // write enable
+    input  logic                        re,        // read enable
+    // Write address: byte‐granular over entire array
+    input  logic [$clog2(DEPTH_WORDS*(READ_WIDTH/WRITE_WIDTH))-1:0] addr_w,
+    input  logic [WRITE_WIDTH-1:0]      din,
+    // Read address: word‐granular
+    input  logic [$clog2(DEPTH_WORDS)-1:0]             addr_r,
+    output logic [READ_WIDTH-1:0]       dout,
+    
+    // Additional outputs for systolic array buffering
+    // Each 32-bit output contains 4 consecutive 8-bit pixels
+    output logic [31:0]                 dout0,     // bytes [3:0]
+    output logic [31:0]                 dout1,     // bytes [7:4] 
+    output logic [31:0]                 dout2,     // bytes [11:8]
+    output logic [31:0]                 dout3      // bytes [15:12]
 );
 
-    logic [D_WIDTH-1:0] ram [0:DEPTH-1];
+    // Number of bytes per READ_WIDTH word
+    localparam int BYTES_PER_WORD = READ_WIDTH / WRITE_WIDTH;
 
+    // Underlying memory: each entry is a READ_WIDTH‐bit word
+    logic [READ_WIDTH-1:0] ram [0:DEPTH_WORDS-1];
 
+    // Optional initialization for simulation
     initial begin
-        if (INIT_FILE != "") begin // Only initialize if a file is specified (using the new parameter)
-            $display("tensor_ram: Initializing RAM from file: %s", INIT_FILE);
+        if (INIT_FILE != "") begin
+            $display("tensor_ram: initializing from %s", INIT_FILE);
             $readmemh(INIT_FILE, ram);
         end else begin
-            //Default initialization if no file is provided, e.g., all zeros
-            for (int i = 0; i < DEPTH; i++) begin
-                ram[i] = {D_WIDTH{1'b0}};
+            for (int i = 0; i < DEPTH_WORDS; i++) begin
+                ram[i] = '0;
             end
-            $display("tensor_ram: No INIT_FILE specified, RAM not initialized from file by $readmemh.");
         end
     end
 
-    //never writing or reading to the same memory location :)
+    // Synchronous read/write
     always_ff @(posedge clk) begin
-          //$display("Memory at address 0: %h", ram[0]);
+        // Write one byte into the wide word
         if (we) begin
-            ram[addr_w] <= din;
+            // Derive which word and which byte lane
+            /* verilator lint_off WIDTHEXPAND */
+            /* verilator lint_off WIDTHTRUNC */
+            int word_idx = {18'd0, addr_w} / BYTES_PER_WORD;
+            int byte_idx = {18'd0, addr_w} % BYTES_PER_WORD;
+            /* verilator lint_on WIDTHTRUNC */
+            /* verilator lint_on WIDTHEXPAND */
+            // Write-enable only that byte slice
+            ram[word_idx][ byte_idx*WRITE_WIDTH +: WRITE_WIDTH ] <= din;
         end
-        else begin
-
-            dout3 <= ram[addr_r][31:0];
-            dout2 <= ram[addr_r][63:32];
-            dout1 <= ram[addr_r][95:64];
-            dout0 <= ram[addr_r][127:96];
+        // Read entire wide word
+        if (re) begin
+            dout <= ram[addr_r];
+            // Break down 128-bit word into 4x 32-bit chunks for systolic array
+            // Each 32-bit chunk contains 4 consecutive 8-bit pixels
+            dout0 <= ram[addr_r][31:0];     // bytes [3:0]
+            dout1 <= ram[addr_r][63:32];    // bytes [7:4]
+            dout2 <= ram[addr_r][95:64];    // bytes [11:8] 
+            dout3 <= ram[addr_r][127:96];   // bytes [15:12]
         end
-
-
     end
-
-
-
 
 endmodule
