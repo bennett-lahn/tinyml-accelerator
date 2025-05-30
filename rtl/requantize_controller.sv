@@ -134,7 +134,7 @@ module requantize_controller #(
     idle = 1'b1;
     for (int i = 0; i < SA_N; i++) begin
       idle &= buf_idle[i];
-      idle &= out_valid[i];
+      idle &= ~out_valid[i];
     end
   end
 

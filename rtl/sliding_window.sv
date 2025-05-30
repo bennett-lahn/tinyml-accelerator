@@ -73,6 +73,7 @@ module sliding_window(
             A1_data      <= '{default:'0};
             A2_data      <= '{default:'0};
             A3_data      <= '{default:'0};
+            done         <= 1'b0;
         end else begin
             // Clear valid pulses every cycle
             vA0_pulse <= 1'b0;
@@ -89,6 +90,7 @@ module sliding_window(
             if (start) begin
                 active_row <= 1'b1;
                 row_sel    <= 3'd0;
+                done       <= 1'b0;
             end
             
             if (active_row) begin
@@ -100,6 +102,7 @@ module sliding_window(
                         A0_data[0] <= A0_in[31:24];
                         vA0_pulse  <= 1'b1;
                         row_sel    <= row_sel + 1;
+                        done <= 1'b0;
                     end
                     3'd1: begin
                         A1_data[3] <= A1_in[7:0];
@@ -112,6 +115,7 @@ module sliding_window(
                         A0_data[1] <= 0;
                         A0_data[2] <= 0;
                         A0_data[3] <= 0; // Clear A0 data after it has been used
+                        done <= 1'b0;
                     end
                     3'd2: begin
                         A2_data[3] <= A2_in[7:0];
@@ -124,6 +128,7 @@ module sliding_window(
                         A1_data[1] <= 0;
                         A1_data[2] <= 0;
                         A1_data[3] <= 0; // Clear A1 data after it has been used
+                        done <= 1'b0;
                     end
                     3'd3: begin
                         A3_data[3] <= A3_in[7:0];
@@ -138,6 +143,7 @@ module sliding_window(
                         row_sel   <= row_sel + 1; // Move to the next row
                         // Clear A2 data after it has been used
                         // active_row <= 1'b0; // End pipeline after the 4th row
+                        done <= 1'b0;
                     end
                     3'd4: begin
                         A3_data[0] <= 0;
@@ -145,7 +151,7 @@ module sliding_window(
                         A3_data[2] <= 0;
                         A3_data[3] <= 0; // Clear A3 data after it has been used
                         active_row <= 1'b0; // End pipeline after the 4th row
-                        // done <= 1'b1; // Indicate that the sliding window operation is done
+                        done <= 1'b1; // Indicate that the sliding window operation is done
                     end
                     default: begin
                         // Do nothing, just keep the last row data
