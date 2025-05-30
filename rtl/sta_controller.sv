@@ -39,7 +39,7 @@ module sta_controller #(
 
   ,output logic                         idle                          // High if STA complex is idle
   ,output logic                         array_out_valid               // High if corresponding val/row/col is valid
-  ,output logic [127:0]                 array_val_out                 // Value out of max pool unit
+  ,output logic [7:0]                   array_val_out                 // 8-bit value out (changed from 128-bit)
   ,output logic [$clog2(MAX_N)-1:0]   array_row_out                 // Row for corresponding value
   ,output logic [$clog2(MAX_N)-1:0]   array_col_out                 // Column for corresponding value
 );
@@ -198,134 +198,48 @@ module sta_controller #(
     ,.out_data(maxpool_val_out)
   );
 
-  // Output buffer for max pooling: 4x4 buffer to hold four 2x2 chunks
-  // Chunk arrangement: top-left, top-right, bottom-left, bottom-right
-  logic output_buffer_valid [4][4];
-  int8_t output_buffer [4][4];
-  logic all_outputs_ready;
-  logic [1:0] current_chunk;  // 0=top-left, 1=top-right, 2=bottom-left, 3=bottom-right
-  logic current_chunk_complete;
-  
-  // Registered outpu
-  logic array_out_valid_reg;
-  logic [127:0] array_val_out_reg;
-  logic [$clog2(MAX_N)-1:0] array_row_out_reg;
-  logic [$clog2(MAX_N)-1:0] array_col_out_reg;
+  // Streaming output logic - output values as they become available
+  // Priority: maxpool output (when not bypassed), then requantization output (when bypassed)
+  logic                       array_out_valid_reg;
+  logic [7:0]                  array_val_out_reg;
+  logic [$clog2(MAX_N)-1:0]   array_row_out_reg;
+  logic [$clog2(MAX_N)-1:0]   array_col_out_reg;
 
-  logic [N_BITS-1:0] rel_col;
-  logic [N_BITS-1:0] rel_row;
-  logic [N_BITS-1:0] base_row;
-  logic [N_BITS-1:0] base_col;
-
-  always_comb begin
-    // Max pool mode: 2x2 chunks fill 4x4 buffer in specific order
-    // Determine target position in 4x4 buffer based on current chunk
-    case (current_chunk)
-      2'b00: begin base_row = 0; base_col = 0; end  // Top-left
-      2'b01: begin base_row = 0; base_col = 2; end  // Top-right  
-      2'b10: begin base_row = 2; base_col = 0; end  // Bottom-left
-      2'b11: begin base_row = 2; base_col = 2; end  // Bottom-right
-    endcase
-
-    rel_row = maxpool_row_out - controller_pos_row;
-    rel_col = maxpool_col_out - controller_pos_col;
-  end
-
-  // Collect results into buffer until all outputs are ready, then output as 128-bit vector
   always_ff @(posedge clk) begin
     if (reset) begin
-      // Full reset: reset everything including output buffer
-      for (int i = 0; i < 4; i++) begin
-        for (int j = 0; j < 4; j++) begin
-          output_buffer_valid[i][j] <= 1'b0;
-          output_buffer[i][j] <= 8'd0;
-        end
-      end
       array_out_valid_reg <= 1'b0;
-      array_val_out_reg <= '0;
+      array_val_out_reg <= 8'd0;
       array_row_out_reg <= '0;
       array_col_out_reg <= '0;
-      current_chunk <= 2'b00;
-    end else if (array_out_valid_reg) begin  
-      // Clear all buffer valid bits when we output the complete tile
-        for (int i = 0; i < 4; i++) begin
-          for (int j = 0; j < 4; j++) begin
-            output_buffer_valid[i][j] <= 1'b0;
-          end
-        end
-        current_chunk <= 2'b00;
-    // Update buffer with new data
-    end else if (bypass_maxpool) begin
-        // Direct mode: Requantized output goes directly to 4x4 buffer
+    end else begin
+      if (bypass_maxpool) begin
+        // TODO: Bypass maxpool will currently LOSE DATA as there is no buffer method out of requant if pooling bypassed.
+        // Direct mode: Output requantized values as they become available
+        // Find the first valid requantized output this cycle
+        array_out_valid_reg <= 1'b0;
         for (int i = 0; i < SA_N; i++) begin
-          for (int j = 0; j < SA_N; j++) begin
-            if (requant_out_valid[i] && requant_col_out[i] == N_BITS'(controller_pos_col + j)) begin
-              output_buffer_valid[i][j] <= 1'b1;
-              output_buffer[i][j] <= requant_val_out[i];
-            end
+          if (requant_out_valid[i]) begin
+            array_out_valid_reg <= 1'b1;
+            array_val_out_reg <= requant_val_out[i];
+            array_row_out_reg <= requant_row_out[i];
+            array_col_out_reg <= requant_col_out[i];
+            break; // Take the first valid output
           end
         end
       end else begin
-        
-        // Max pool outputs 2x2, map to appropriate chunk in 4x4 buffer
+        // Max pool mode: Output max pooled values as they become available
         if (maxpool_out_valid) begin
-          if (rel_row < 2 && rel_col < 2) begin
-            output_buffer_valid[2'(base_row + rel_row)][2'(base_col + rel_col)] <= 1'b1;
-            output_buffer[2'(base_row + rel_row)][2'(base_col + rel_col)] <= maxpool_val_out;
-          end
+          array_out_valid_reg <= 1'b1;
+          array_val_out_reg <= maxpool_val_out;
+          array_row_out_reg <= maxpool_row_out;
+          array_col_out_reg <= maxpool_col_out;
+        end else begin
+          array_out_valid_reg <= 1'b0;
         end
-        // Advance to next chunk when current chunk is complete
-        if (current_chunk_complete && current_chunk != 2'b11) begin
-          current_chunk <= current_chunk + 1;
-        end
-      end
-      
-      // Output assignment when all outputs are ready
-      if (all_outputs_ready && !array_out_valid_reg) begin
-        array_out_valid_reg <= 1'b1;
-        // Pack all 16 outputs into 128-bit vector with MSB being first chunk
-        // Chunk order: top-left, top-right, bottom-left, bottom-right
-        // Within each chunk: [0][0], [0][1], [1][0], [1][1]
-        array_val_out_reg <= {
-          // Chunk 1 (top-left): bits [127:96]
-          output_buffer[0][0], output_buffer[0][1], output_buffer[1][0], output_buffer[1][1],
-          // Chunk 2 (top-right): bits [95:64]  
-          output_buffer[0][2], output_buffer[0][3], output_buffer[1][2], output_buffer[1][3],
-          // Chunk 3 (bottom-left): bits [63:32]
-          output_buffer[2][0], output_buffer[2][1], output_buffer[3][0], output_buffer[3][1],
-          // Chunk 4 (bottom-right): bits [31:0]
-          output_buffer[2][2], output_buffer[2][3], output_buffer[3][2], output_buffer[3][3]
-        };
-        array_row_out_reg <= controller_pos_row;
-        array_col_out_reg <= controller_pos_col;
-      end else if (!all_outputs_ready) begin
-        array_out_valid_reg <= 1'b0;
-      end
-    end
-
-  // Combinational logic to check if current chunk is complete
-  always_comb begin        
-    current_chunk_complete = 1'b1;
-    
-    // Check if all positions in current 2x2 chunk are valid
-    for (int i = 0; i < 2; i++) begin
-      for (int j = 0; j < 2; j++) begin
-        current_chunk_complete &= output_buffer_valid[2'(base_row + 6'(i))][2'(base_col + 6'(j))];
       end
     end
   end
 
-  // Combinational logic detects when all outputs are ready
-  always_comb begin
-    all_outputs_ready = 1'b1;
-      for (int i = 0; i < SA_N; i++) begin
-        for (int j = 0; j < SA_N; j++) begin
-          int pe_idx = i * SA_N + j;  // Calculate flat PE index
-          all_outputs_ready &= output_buffer_valid[i][j];
-        end
-      end
-  end
-  
   // Connect registered outputs to module outputs
   assign array_out_valid = array_out_valid_reg;
   assign array_val_out = array_val_out_reg;

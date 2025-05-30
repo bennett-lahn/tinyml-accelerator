@@ -164,7 +164,7 @@ module layer_controller #(
     chnnl_idx = channel_count;
 
     // Output current layer filter dimensions
-    num_filters      = CONV_OUT_C[layer_count];
+    num_filters        = CONV_OUT_C[layer_count];  
     num_input_channels = CONV_IN_C[layer_count];
 
     case (current_state)
