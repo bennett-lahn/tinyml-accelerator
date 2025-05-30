@@ -37,6 +37,17 @@ module layer_controller #(
   ,output logic [$clog2(MAX_N)-1:0] controller_pos_col
   ,output logic                     pe_mask [SA_N*SA_N] // Mask for active PEs in current tile
 
+  // Current computation output position (in the output feature map)
+  ,output logic [$clog2(MAX_N)-1:0] current_out_row
+  ,output logic [$clog2(MAX_N)-1:0] current_out_col
+  
+  // Next computation output position (for memory preloading)
+  ,output logic [$clog2(MAX_N)-1:0] next_out_row
+  ,output logic [$clog2(MAX_N)-1:0] next_out_col
+  ,output logic [$clog2(NUM_LAYERS)-1:0] next_layer_idx
+  ,output logic [$clog2(MAX_NUM_CH)-1:0] next_chnnl_idx
+  ,output logic                    next_computation_valid // High when next computation signals are valid
+
   // Current layer filter dimensions
   ,output logic [$clog2(MAX_NUM_CH+1)-1:0] num_filters      // Number of output channels (filters) for current layer
   ,output logic [$clog2(MAX_NUM_CH+1)-1:0] num_input_channels // Number of input channels for current layer
@@ -73,6 +84,11 @@ module layer_controller #(
   // Tile dimension calculations
   logic [$clog2(SA_N+1)-1:0] current_tile_h, current_tile_w;
   logic [$clog2(SA_N+1)-1:0] remaining_out_h, remaining_out_w;
+
+  // Next computation prediction
+  logic [$clog2(NUM_LAYERS+1)-1:0] next_layer_count;
+  logic [$clog2(MAX_NUM_CH+1)-1:0] next_channel_count;
+  logic [$clog2(64)-1:0] next_tile_row, next_tile_col;
 
   // State register and counter logic
   always_ff @(posedge clk or posedge reset) begin
@@ -167,6 +183,54 @@ module layer_controller #(
     num_filters        = CONV_OUT_C[layer_count];  
     num_input_channels = CONV_IN_C[layer_count];
 
+    // Output current computation output position
+    current_out_row = current_tile_row * SA_N;
+    current_out_col = current_tile_col * SA_N;
+
+    // Calculate next computation positions (combinational logic)
+    if (current_tile_col == tiles_per_col - 1) begin
+      next_tile_col = 'd0;
+      if (current_tile_row == tiles_per_row - 1) begin
+        next_tile_row = 'd0;
+        // Advance to next channel
+        if (channel_count == CONV_OUT_C[layer_count] - 1) begin
+          next_channel_count = 'd0;
+          // Advance to next layer
+          next_layer_count = layer_count + 1'd1;
+        end else begin
+          next_channel_count = channel_count + 1'd1;
+          next_layer_count = layer_count;
+        end
+      end else begin
+        next_tile_row = current_tile_row + 1'd1;
+        next_tile_col = current_tile_col;
+        next_channel_count = channel_count;
+        next_layer_count = layer_count;
+      end
+    end else begin
+      next_tile_col = current_tile_col + 1'd1;
+      next_tile_row = current_tile_row;
+      next_channel_count = channel_count;
+      next_layer_count = layer_count;
+    end
+
+    // Output next computation output position
+    // If we've completed all layers, next values are undefined (can be set to 0)
+    if (last_tile && last_channel && last_layer) begin
+      next_out_row = 'd0;
+      next_out_col = 'd0;
+      next_layer_idx = 'd0;
+      next_chnnl_idx = 'd0;
+    end else begin
+      next_out_row = next_tile_row * SA_N;
+      next_out_col = next_tile_col * SA_N;
+      next_layer_idx = next_layer_count;
+      next_chnnl_idx = next_channel_count;
+    end
+
+    // Calculate next_computation_valid
+    next_computation_valid = !(last_tile && last_channel && last_layer);
+
     case (current_state)
       S_IDLE: begin
         if (start)
@@ -218,11 +282,3 @@ module layer_controller #(
   end
 
 endmodule
-
-// Each PE has a VECTOR_WIDTH = 4. Does this mean each PE could take inputs from 4 different channels at a time?
-
-// TODO:
-// 1. start_compute does not do what it needs to 
-// 2. STA idle should only be expected to trigger when the output is completely finished calculating (i.e., at the end of that output tile, but not a finer granularity).
-
-// output coordinator calculation for compute time needs to be updated

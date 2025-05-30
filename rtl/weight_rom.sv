@@ -62,10 +62,17 @@ module weight_rom #(
         end
     end
 
+// Example: Loading Output Filter 0, Input Channel Group 0 (channels 0-3), Row 0
+// ROM Address X returns:
+//   weight_rom_data3: [(0,0,0), (0,0,1), (0,0,2), (0,0,3)] - position (0,0) for channels 0-3
+//   weight_rom_data2: [(0,1,0), (0,1,1), (0,1,2), (0,1,3)] - position (0,1) for channels 0-3
+//   weight_rom_data1: [(0,2,0), (0,2,1), (0,2,2), (0,2,3)] - position (0,2) for channels 0-3
+//   weight_rom_data0: [(0,3,0), (0,3,1), (0,3,2), (0,3,3)] - position (0,3) for channels 0-3
 
-
-
-
+// Next ROM read (Address X+1) returns Row 1:
+//   weight_rom_data3: [(1,0,0), (1,0,1), (1,0,2), (1,0,3)] - position (1,0) for channels 0-3
+//   weight_rom_data2: [(1,1,0), (1,1,1), (1,1,2), (1,1,3)] - position (1,1) for channels 0-3
+//   weight_rom_data1: [(1,2,0), (1,2,1), (1,2,2), (1,2,3)] - position (1,2) for channels 0-3
+//   weight_rom_data0: [(1,3,0), (1,3,1), (1,3,2), (1,3,3)] - position (1,3) for channels 0-3
 
 endmodule
-
