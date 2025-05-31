@@ -1,9 +1,9 @@
 # Python script to generate a .hex file for an image
 # with 128-bit words and dimensions IMG_W x IMG_H x NUM_CHANNELS.
 
-IMG_W = 32
-IMG_H = 32
-NUM_CHANNELS = 1
+IMG_W = 16
+IMG_H = 16
+NUM_CHANNELS = 8
 FILENAME = "image_data.hex"
 
 def generate_hex_file(width, height, channels, filename):
