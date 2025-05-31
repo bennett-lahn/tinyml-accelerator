@@ -2,7 +2,7 @@ module requantize_scale_rom #(
   parameter int NUM_LAYERS = 6
   ,parameter int MULT_WIDTH = 32                                 // Width of multiplier for quantizing
   ,parameter int SHIFT_WIDTH = 6                                 // Width of shift for quantizing 
-  ,parameter INIT_FILE = "../rtl/quant_params.hex"
+  ,parameter INIT_FILE = "../fakemodel/quant_params.hex"
 
 ) (
   input  logic clk

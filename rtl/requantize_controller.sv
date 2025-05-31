@@ -1,5 +1,7 @@
 `include "sys_types.svh"
 
+// TODO: Update to change requantize parameters per output channel not layer
+
 module requantize_controller #(
   parameter int SA_N               = 4   // # of buffer/quant pairs
   ,parameter int NUM_LAYERS        = 6   // # of layers in model
@@ -92,7 +94,7 @@ module requantize_controller #(
     ,.SHIFT_WIDTH    (SHIFT_WIDTH)
   ) scale_rom_inst (
     .clk             (clk)
-    ,.valid          (1'b1) // Always valid: fetch scale for current layer TODO: not great syle to have valid always on
+    ,.valid          (1'b1) // TODO: not great syle to have valid always on
     ,.layer_idx      (layer_idx)
     ,.input_mult_out (input_mult)
     ,.input_shift_out(input_shift)
