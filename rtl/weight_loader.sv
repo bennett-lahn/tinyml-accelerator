@@ -26,7 +26,6 @@ module weight_loader #(
     input  logic stall,                         // Stall signal from system
     
     // Configuration inputs
-    input  logic [CH_BITS-1:0] num_input_channels, // Number of input channels for current layer
     input  logic [$clog2(MAX_NUM_CH)-1:0] output_channel_idx, // Current output channel being processed
     input  logic [$clog2(NUM_LAYERS)-1:0] current_layer_idx, // Current layer index
     
@@ -76,8 +75,7 @@ module weight_loader #(
     // Main FSM counters and control signals
     logic [CH_BITS-1:0] current_input_channel_group;   // Current group of 4 input channels being loaded
     logic [CH_BITS-1:0] max_channel_groups;            // Total number of channel groups needed
-    logic [$clog2(KERNEL_SIZE+1)-1:0] buffer_row, buffer_col; // For loading buffer
-    logic [$clog2(KERNEL_SIZE+1)-1:0] weight_row;      // Current weight row being sent
+    logic [$clog2(KERNEL_SIZE)-1:0] buffer_row; // For loading buffer
     logic all_columns_done;
     logic buffer_loading_active;                        // True when we're actively loading buffer
     
@@ -87,16 +85,27 @@ module weight_loader #(
     logic [3:0] col_weight_position [0:3];   // Current weight position in row-major order (0-15) for each column
     logic col_active [0:3];                  // Whether each column is actively sending weights
     
-    // Passthrough control signals
-    logic use_passthrough_col0;                     // Whether column 0 should use passthrough data
-    logic rom_data_valid;                           // ROM data is valid this cycle
+    // Channel group transition control
+    logic transitioning_to_next_channel_group;      // Signal to indicate we're transitioning to next input channel group
+    
+    // ROM control signals
+    logic rom_data_valid;                           // ROM data is valid this cycle (internal use)
+    
+    // ROM data valid register - delayed version of weight_rom_read_enable
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            rom_data_valid <= 1'b0;
+        end else begin
+            rom_data_valid <= weight_rom_read_enable;
+        end
+    end
     
     // Function to calculate cumulative layer base offsets at compile time
     function automatic logic [ROM_ADDR_BITS-1:0] calculate_layer_offset(int layer_idx);
         logic [ROM_ADDR_BITS-1:0] offset;
         offset = 0;
         for (int i = 0; i < layer_idx; i++) begin
-            offset = offset + ROM_ADDR_BITS'(CONV_OUT_C[i] * 4 * CONV_IN_C[i]);
+            offset = offset + ROM_ADDR_BITS'(CONV_OUT_C[i] * CONV_IN_C[i]);
         end
         return offset;
     endfunction
@@ -106,7 +115,9 @@ module weight_loader #(
     
     generate
         genvar layer_gen;
-        for (layer_gen = 0; layer_gen < NUM_LAYERS; layer_gen++) begin : gen_layer_offsets
+        // Layer 0 has no base offset
+        assign LAYER_BASE_OFFSETS[0] = 0;
+        for (layer_gen = 1; layer_gen < NUM_LAYERS; layer_gen++) begin : gen_layer_offsets
             assign LAYER_BASE_OFFSETS[layer_gen] = calculate_layer_offset(layer_gen);
         end
     endgenerate
@@ -151,20 +162,9 @@ module weight_loader #(
     // Each input channel group has 4 consecutive addresses, one per row
     // Each ROM read returns one complete row (4 columns) for 4 input channels
     always_comb begin
-        logic [1:0] rom_row_position;
         logic [$clog2(ROM_DEPTH)-1:0] layer_base_offset;
         logic [$clog2(ROM_DEPTH)-1:0] within_layer_offset;
         logic [$clog2(MAX_NUM_CH+1)-1:0] current_layer_input_channel_groups;
-        
-        // For passthrough (column 0 immediate output), use column 0's current weight position converted to row
-        // For buffer loading, use buffer_row directly
-        if (use_passthrough_col0 && col_active[0]) begin
-            // Convert from row-major position (0-15) to row position (0-3)
-            rom_row_position = 2'(col_weight_position[0] / 4);  // Extract row from row-major position
-        end else begin
-            // For buffer loading, use buffer_row directly since we load one row at a time
-            rom_row_position = 2'(buffer_row);
-        end
         
         // Calculate input channel groups for current layer
         current_layer_input_channel_groups = ($clog2(MAX_NUM_CH+1))'((CONV_IN_C[current_layer_idx] + VECTOR_WIDTH - 1) / VECTOR_WIDTH);
@@ -177,7 +177,7 @@ module weight_loader #(
         // within_layer_offset = (output_filter_idx * 4_rows * input_channel_groups) + (input_channel_group * 4_rows) + row_position
         within_layer_offset = (output_channel_idx * 4 * current_layer_input_channel_groups) +
                              (current_input_channel_group * 4) +
-                             ($clog2(ROM_DEPTH))'(rom_row_position);
+                             ($clog2(ROM_DEPTH))'(buffer_row);
         
         // Final ROM address = layer base offset + within layer offset
         weight_rom_addr = layer_base_offset + within_layer_offset;
@@ -210,40 +210,36 @@ module weight_loader #(
         if (reset) begin
             current_input_channel_group <= 'd0;
             buffer_row <= 'd0;
-            buffer_col <= 'd0;
-            weight_row <= 'd0;
         end else if (!stall) begin
             case (main_current_state)
                 MAIN_IDLE: begin
                     if (start) begin
                         current_input_channel_group <= 'd0;
-                        buffer_row <= 'd0;
-                        buffer_col <= 'd0;
-                        weight_row <= 'd0;
+                        // Don't reset buffer_row here - only reset when transitioning to next channel
                     end
                 end
                 
                 MAIN_RUNNING: begin
-                    // Buffer loading logic - increment row counter when loading one complete row
-                    if (buffer_loading_active) begin
-                        if (buffer_row == ($clog2(KERNEL_SIZE+1))'(KERNEL_SIZE - 1)) begin
-                            buffer_row <= 'd0;
-                            // All 4 rows loaded for current channel group
-                        end else begin
-                            buffer_row <= buffer_row + 1'd1;
+                    // Advance to next channel group when transitioning
+                    // Special case for first layer with only 1 input channel
+                    if (current_layer_idx == 0) begin
+                        buffer_row <= ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1);
+                    end else begin
+                        if (transitioning_to_next_channel_group) begin
+                            current_input_channel_group <= current_input_channel_group + 1'd1;
+                            buffer_row <= 'd0;  // Reset buffer_row only for next channel group
+                        end else if (rom_data_valid) begin
+                        // Increment buffer_row when ROM is being read (loading weights)
+                            if (buffer_row == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
+                                // All 4 rows loaded for current channel group, keep at max
+                                // Don't reset here - only reset when transitioning to next channel
+                                buffer_row <= buffer_row; // Stay at max value
+                            end else begin
+                                buffer_row <= buffer_row + 1'd1;
+                            end
                         end
-                        // buffer_col is not used since we load complete rows at a time
-                    end
-                    
-                    // Check if we need to transition to load next channel group
-                    if (all_columns_completed_zero_phase && 
-                        current_input_channel_group < max_channel_groups - 1) begin
-                        // Reset buffer counters and advance to next channel group
-                        current_input_channel_group <= current_input_channel_group + 1'd1;
-                        buffer_row <= 'd0;
                     end
                 end
-                
                 default: begin
                     // Keep current values
                 end
@@ -260,48 +256,54 @@ module weight_loader #(
                 col_weight_position[i] <= 'd0;
             end
         end else if (!stall) begin
-            for (int i = 0; i < 4; i++) begin
-                case (col_state[i])
-                    COL_IDLE: begin
-                        if (main_current_state == MAIN_RUNNING) begin
-                            col_delay_count[i] <= 'd0;
-                            col_cycle_count[i] <= 'd0;
-                            col_weight_position[i] <= 'd0;
-                        end
-                    end
-                    
-                    COL_DELAY: begin
-                        col_delay_count[i] <= col_delay_count[i] + 1'd1;
-                    end
-                    
-                    COL_WEIGHT_PHASE: begin
-                        col_cycle_count[i] <= col_cycle_count[i] + 1'd1;
-                        // Advance weight position each cycle in row-major order
-                        if (col_weight_position[i] < 4'd15) begin
-                            col_weight_position[i] <= col_weight_position[i] + 1'd1;
-                        end
-                        
-                        // Reset cycle count after 4 cycles, and reset position if we've completed all 16
-                        if (col_cycle_count[i] == 3'd3) begin // After 4 cycles
-                            col_cycle_count[i] <= 'd0;
-                            if (col_weight_position[i] == 4'd15) begin // After all 16 positions
-                                col_weight_position[i] <= 'd0; // Reset for next channel group
+            // Reset all column counters when transitioning to next channel group
+            if (transitioning_to_next_channel_group) begin
+                for (int i = 0; i < 4; i++) begin
+                    col_delay_count[i] <= 'd0;
+                    col_cycle_count[i] <= 'd0;
+                    col_weight_position[i] <= 'd0;
+                end
+            end else begin
+                for (int i = 0; i < 4; i++) begin
+                    case (col_state[i])
+                        COL_IDLE: begin
+                            if (main_current_state == MAIN_RUNNING) begin
+                                col_delay_count[i] <= 'd0;
+                                col_cycle_count[i] <= 'd0;
+                                col_weight_position[i] <= 'd0;
                             end
                         end
-                    end
-                    
-                    COL_ZERO_PHASE: begin
-                        col_cycle_count[i] <= col_cycle_count[i] + 1'd1;
-                        if (col_cycle_count[i] == 3'd2) begin // After 3 cycles
-                            col_cycle_count[i] <= 'd0;
-                            // Don't reset position - it continues from where it left off
+                        
+                        COL_DELAY: begin
+                            col_delay_count[i] <= col_delay_count[i] + 1'd1;
                         end
-                    end
-                    
-                    default: begin
-                        // Keep current values
-                    end
-                endcase
+                        
+                        COL_WEIGHT_PHASE: begin
+                            col_cycle_count[i] <= col_cycle_count[i] + 1'd1;
+                            // Advance weight position each cycle in row-major order
+                            if (col_weight_position[i] < 4'd15) begin
+                                col_weight_position[i] <= col_weight_position[i] + 1'd1;
+                            end
+                            
+                            // Reset cycle count after 4 cycles, and reset position if we've completed all 16
+                            if (col_cycle_count[i] == 3'd3) begin // After 4 cycles
+                                col_cycle_count[i] <= 'd0;
+                            end
+                        end
+                        
+                        COL_ZERO_PHASE: begin
+                            col_cycle_count[i] <= col_cycle_count[i] + 1'd1;
+                            if (col_cycle_count[i] == 3'd2) begin // After 3 cycles
+                                col_cycle_count[i] <= 'd0;
+                                // Don't reset position - it continues from where it left off
+                            end
+                        end
+                        
+                        default: begin
+                            // Keep current values
+                        end
+                    endcase
+                end
             end
         end
     end
@@ -315,12 +317,9 @@ module weight_loader #(
                     weight_buffer[r][ch] <= 8'd0;
                 end
             end
-        end else if (!stall && main_current_state == MAIN_RUNNING && buffer_loading_active) begin
+        end else if (!stall && main_current_state == MAIN_RUNNING && rom_data_valid) begin
             // Load weights from ROM data into buffer
             // Store in buffer using row-major indexing for systolic array output
-            // Convert buffer_row to base position for this row
-            logic [3:0] base_position;
-            base_position = buffer_row * 4;  // Row start position
             
             // Check if this is the special case: first layer with only 1 input channel
             if (current_layer_idx == 0 && CONV_IN_C[0] == 1) begin
@@ -371,61 +370,87 @@ module weight_loader #(
                 // rom_data0 = (row,3) for input channels 0,1,2,3
                 
                 // Column 0 data for all 4 input channels (position 0, 4, 8, 12)
-                weight_buffer[base_position + 0][0] <= weight_rom_data3[31:24]; // Input channel 0, col 0
-                weight_buffer[base_position + 0][1] <= weight_rom_data3[23:16]; // Input channel 1, col 0
-                weight_buffer[base_position + 0][2] <= weight_rom_data3[15:8];  // Input channel 2, col 0
-                weight_buffer[base_position + 0][3] <= weight_rom_data3[7:0];   // Input channel 3, col 0
+
+                weight_buffer[buffer_row*4 + 0][0] <= weight_rom_data3[31:24]; // Input channel 0, col 0
+                weight_buffer[buffer_row*4 + 0][1] <= weight_rom_data3[23:16]; // Input channel 1, col 0
+                weight_buffer[buffer_row*4 + 0][2] <= weight_rom_data3[15:8];  // Input channel 2, col 0
+                weight_buffer[buffer_row*4 + 0][3] <= weight_rom_data3[7:0];   // Input channel 3, col 0
                 
                 // Column 1 data for all 4 input channels (position 1, 5, 9, 13)
-                weight_buffer[base_position + 1][0] <= weight_rom_data2[31:24]; // Input channel 0, col 1
-                weight_buffer[base_position + 1][1] <= weight_rom_data2[23:16]; // Input channel 1, col 1
-                weight_buffer[base_position + 1][2] <= weight_rom_data2[15:8];  // Input channel 2, col 1
-                weight_buffer[base_position + 1][3] <= weight_rom_data2[7:0];   // Input channel 3, col 1
+                weight_buffer[buffer_row*4 + 1][0] <= weight_rom_data2[31:24]; // Input channel 0, col 1
+                weight_buffer[buffer_row*4 + 1][1] <= weight_rom_data2[23:16]; // Input channel 1, col 1
+                weight_buffer[buffer_row*4 + 1][2] <= weight_rom_data2[15:8];  // Input channel 2, col 1
+                weight_buffer[buffer_row*4 + 1][3] <= weight_rom_data2[7:0];   // Input channel 3, col 1
                 
                 // Column 2 data for all 4 input channels (position 2, 6, 10, 14)
-                weight_buffer[base_position + 2][0] <= weight_rom_data1[31:24]; // Input channel 0, col 2
-                weight_buffer[base_position + 2][1] <= weight_rom_data1[23:16]; // Input channel 1, col 2
-                weight_buffer[base_position + 2][2] <= weight_rom_data1[15:8];  // Input channel 2, col 2
-                weight_buffer[base_position + 2][3] <= weight_rom_data1[7:0];   // Input channel 3, col 2
+                weight_buffer[buffer_row*4 + 2][0] <= weight_rom_data1[31:24]; // Input channel 0, col 2
+                weight_buffer[buffer_row*4 + 2][1] <= weight_rom_data1[23:16]; // Input channel 1, col 2
+                weight_buffer[buffer_row*4 + 2][2] <= weight_rom_data1[15:8];  // Input channel 2, col 2
+                weight_buffer[buffer_row*4 + 2][3] <= weight_rom_data1[7:0];   // Input channel 3, col 2
                 
                 // Column 3 data for all 4 input channels (position 3, 7, 11, 15)
-                weight_buffer[base_position + 3][0] <= weight_rom_data0[31:24]; // Input channel 0, col 3
-                weight_buffer[base_position + 3][1] <= weight_rom_data0[23:16]; // Input channel 1, col 3
-                weight_buffer[base_position + 3][2] <= weight_rom_data0[15:8];  // Input channel 2, col 3
-                weight_buffer[base_position + 3][3] <= weight_rom_data0[7:0];   // Input channel 3, col 3
+                weight_buffer[buffer_row*4 + 3][0] <= weight_rom_data0[31:24]; // Input channel 0, col 3
+                weight_buffer[buffer_row*4 + 3][1] <= weight_rom_data0[23:16]; // Input channel 1, col 3
+                weight_buffer[buffer_row*4 + 3][2] <= weight_rom_data0[15:8];  // Input channel 2, col 3
+                weight_buffer[buffer_row*4 + 3][3] <= weight_rom_data0[7:0];   // Input channel 3, col 3
             end
         end
     end
-    
-    // Check if buffer loading is complete
-    always_comb begin
-        // Special case: First layer with 1 input channel loads all rows in single read
-        if (current_layer_idx == 0 && CONV_IN_C[0] == 1) begin
-            buffer_loading_active = 1'b0; // Always complete after single read
-        end else begin
-            // Regular case: Need to load all 4 rows sequentially
-            buffer_loading_active = !(buffer_row == ($clog2(KERNEL_SIZE+1))'(KERNEL_SIZE - 1));
+
+    always_ff @(posedge clk) begin
+        $display("=== Weight Buffer Contents ===");
+        for (int row = 0; row < 4; row++) begin
+            for (int col = 0; col < 4; col++) begin
+                int pos = row * 4 + col;
+                $display("Pos[%0d] (r%0d,c%0d): Ch[0]=%0d Ch[1]=%0d Ch[2]=%0d Ch[3]=%0d",
+                    pos, row, col,
+                    $signed(weight_buffer[pos][0]),
+                    $signed(weight_buffer[pos][1]),
+                    $signed(weight_buffer[pos][2]),
+                    $signed(weight_buffer[pos][3]));
+            end
         end
+        $display("===========================");
     end
     
-    // ROM data valid signal
-    always_comb begin
-        rom_data_valid = weight_rom_read_enable;
-    end
+    // Check if buffer is fully loaded (all rows loaded for current channel group)
+    logic buffer_fully_loaded;
+    assign buffer_fully_loaded = (buffer_row == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE-1));
     
-    // Passthrough control - only column 0 needs passthrough capability
-    always_comb begin
-        // Column 0 uses passthrough when just starting and loading first row
-        use_passthrough_col0 = (col_state[0] == COL_WEIGHT_PHASE) && 
-                              buffer_loading_active && rom_data_valid && 
-                              (buffer_row == 0);
-    end
+    // Passthrough control - simplified, only for column 0 when buffer not ready
+    logic use_passthrough_col0;
+    assign use_passthrough_col0 = (col_state[0] == COL_WEIGHT_PHASE) && !buffer_fully_loaded;
     
     // Column active signals
     always_comb begin
         for (int i = 0; i < 4; i++) begin
             col_active[i] = (col_state[i] == COL_WEIGHT_PHASE);
         end
+    end
+    
+    // Detect transition to next channel group
+    always_comb begin
+        logic all_weights_at_max;
+        logic all_columns_inactive;
+        
+        // Check if all weight positions are at maximum (15)
+        all_weights_at_max = 1'b1;
+        for (int i = 0; i < 4; i++) begin
+            if (col_weight_position[i] != 4'd15) begin
+                all_weights_at_max = 1'b0;
+            end
+        end
+        // Check if all columns are inactive
+        all_columns_inactive = 1'b1;
+        for (int i = 0; i < 4; i++) begin
+            if (col_active[i] != 0) begin
+                all_columns_inactive = 1'b0;
+            end
+        end
+        // Combine conditions for transition
+        transitioning_to_next_channel_group = all_weights_at_max && 
+                                            all_columns_inactive && 
+                                            (current_input_channel_group < max_channel_groups - 1);
     end
     
     // Main FSM next state logic
@@ -466,60 +491,66 @@ module weight_loader #(
         for (int i = 0; i < 4; i++) begin
             col_next_state[i] = col_state[i];
             
-            case (col_state[i])
-                COL_IDLE: begin
-                    if (main_current_state == MAIN_RUNNING) begin
-                        if (i == 0) begin
-                            // Column 0 has no initial delay, go directly to weight phase
-                            col_next_state[i] = COL_WEIGHT_PHASE;
-                        end else begin
-                            // Columns 1-3 need initial delays
-                            col_next_state[i] = COL_DELAY;
-                        end
-                    end
-                end
-                
-                COL_DELAY: begin
-                    // Each column has a different delay: col 1=1 cycle, col 2=2 cycles, col 3=3 cycles
-                    // col_delay_count starts at 0 and increments each cycle in COL_DELAY state
-                    // So we transition when count reaches (i-1) to get i cycles of delay
-                    if (col_delay_count[i] == 2'(i - 1)) begin
-                        col_next_state[i] = COL_WEIGHT_PHASE;
-                    end
-                end
-                
-                COL_WEIGHT_PHASE: begin
-                    // Send weights for 4 cycles, then go to zero phase
-                    if (col_cycle_count[i] == 3'd3) begin // After 4 cycles
-                        col_next_state[i] = COL_ZERO_PHASE;
-                    end
-                end
-                
-                COL_ZERO_PHASE: begin
-                    // Send zeros for 3 cycles
-                    if (col_cycle_count[i] == 3'd2) begin
-                        if (col_weight_position[i] == 4'd0) begin // All 16 positions complete (reset to 0)
-                            if (current_input_channel_group == max_channel_groups - 1) begin
-                                col_next_state[i] = COL_DONE; // All channel groups processed
+            // Force all columns to COL_IDLE when transitioning to next channel group
+            if (transitioning_to_next_channel_group) begin
+                col_next_state[i] = COL_IDLE;
+            end else begin
+                case (col_state[i])
+                    COL_IDLE: begin
+                        if (main_current_state == MAIN_RUNNING) begin
+                            if (i == 0) begin
+                                // Column 0 has no initial delay, go directly to weight phase
+                                col_next_state[i] = COL_WEIGHT_PHASE;
                             end else begin
-                                col_next_state[i] = COL_WEIGHT_PHASE; // Next channel group
+                                // Columns 1-3 need initial delays
+                                col_next_state[i] = COL_DELAY;
                             end
-                        end else begin
-                            col_next_state[i] = COL_WEIGHT_PHASE; // Continue with next 4 positions
                         end
                     end
-                end
-                
-                COL_DONE: begin
-                    if (start) begin // Restart on new start signal
+                    
+                    COL_DELAY: begin
+                        // Each column has a different delay: col 1=1 cycle, col 2=2 cycles, col 3=3 cycles
+                        // col_delay_count starts at 0 and increments each cycle in COL_DELAY state
+                        // So we transition when count reaches (i-1) to get i cycles of delay
+                        if (col_delay_count[i] == 2'(i - 1)) begin
+                            col_next_state[i] = COL_WEIGHT_PHASE;
+                        end
+                    end
+                    
+                    COL_WEIGHT_PHASE: begin
+                        // Send weights for 4 cycles, then go to zero phase
+                        if (col_cycle_count[i] == 3'd3) begin // After 4 cycles
+                            col_next_state[i] = COL_ZERO_PHASE;
+                        end
+                    end
+                    
+                    COL_ZERO_PHASE: begin
+                        // Send zeros for 3 cycles
+                        if (col_cycle_count[i] == 3'd2) begin
+                            if (col_weight_position[i] == 4'd15) begin // All 16 positions complete (reset to 0)
+                                if (current_input_channel_group == max_channel_groups - 1) begin
+                                    col_next_state[i] = COL_DONE; // All channel groups processed
+                                end else begin
+                                    // Transition to next channel group will be handled by transitioning_to_next_channel_group
+                                    col_next_state[i] = COL_ZERO_PHASE; // Stay in zero phase until transition
+                                end
+                            end else begin
+                                col_next_state[i] = COL_WEIGHT_PHASE; // Continue with next 4 positions
+                            end
+                        end
+                    end
+                    
+                    COL_DONE: begin
+                        if (start) begin // Restart on new start signal
+                            col_next_state[i] = COL_IDLE;
+                        end
+                    end
+                    
+                    default: begin
                         col_next_state[i] = COL_IDLE;
                     end
-                end
-                
-                default: begin
-                    col_next_state[i] = COL_IDLE;
-                end
-            endcase
+                endcase
+            end
         end
     end
     
@@ -542,10 +573,10 @@ module weight_loader #(
         col_pos = 2'b00;
         selected_rom_data = 32'h0;
         
-        // Column 0: Use passthrough when loading first weights, otherwise use buffer
+        // Column 0: Use passthrough when buffer not ready, otherwise use buffer
         if (col_state[0] == COL_WEIGHT_PHASE) begin
-            if (use_passthrough_col0) begin
-                // Use ROM data directly for immediate response
+            if (use_passthrough_col0 && rom_data_valid) begin
+                // Use ROM data directly for immediate response when buffer not ready
                 
                 // Check if this is the special case: first layer with only 1 input channel
                 if (current_layer_idx == 0 && CONV_IN_C[0] == 1) begin
@@ -621,10 +652,18 @@ module weight_loader #(
     
     // Control signals
     always_comb begin
-        // Read ROM when we need to load buffer or provide passthrough data
-        weight_rom_read_enable = (main_current_state == MAIN_RUNNING) && 
-                               (buffer_loading_active || (use_passthrough_col0 && col_active[0]));
-        idle = (main_current_state == MAIN_IDLE);
+        // Read ROM when transitioning to MAIN_RUNNING or currently in MAIN_RUNNING state and buffer is not fully loaded
+        // Start reading one cycle early to account for ROM's one cycle delay
+        // Special case for layer 0: Only read ROM once (on transition to MAIN_RUNNING)
+        if (current_layer_idx == 0) begin
+            weight_rom_read_enable = (main_next_state == MAIN_RUNNING && main_current_state == MAIN_IDLE);
+        end else begin
+            weight_rom_read_enable = ((main_next_state == MAIN_RUNNING && main_current_state == MAIN_IDLE) ||
+                                     (main_current_state == MAIN_RUNNING)) && 
+                                   (buffer_row < ($clog2(KERNEL_SIZE))'(KERNEL_SIZE-1));
+        end
+        
+        idle = (main_current_state == MAIN_IDLE || main_current_state == MAIN_DONE);
         weight_load_complete = (main_current_state == MAIN_DONE);
     end
 

@@ -2,10 +2,12 @@
 // Each layer has a fixed number of bias values equal to its channel count.
 // Supports multiple layers with independent channel counts.
 
+// TODO: Intiailize ROM
+
 module bias_rom #(
     parameter WIDTH = 32             // Number of CNN layers
     ,parameter DEPTH = 256    
-    ,parameter INIT_FILE = "" // Optional initialization file
+    ,parameter INIT_FILE = "../fakemodel/tflite_conv_biases.hex" // Optional initialization file
 )(
     input  logic clk                                   // Clock for synchronous read
     ,input  logic                          read_enable  // High if read request is valid
