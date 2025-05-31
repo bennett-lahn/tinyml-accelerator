@@ -1,0 +1,3 @@
+# Dense kernel quantization zero points (per-layer/per-tensor)
+tfl.pseudo_qconst1: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+tfl.pseudo_qconst3: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]

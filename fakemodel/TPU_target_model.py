@@ -72,7 +72,7 @@ else:
 
     print("\n--- Training Model (with CIFAR-10 Grayscale 32x32 data) ---")
     model.fit(x_train_processed_cifar, y_train_processed_cifar,
-              epochs=10, 
+              epochs=50, 
               batch_size=32,
               validation_data=(x_test_processed_cifar, y_test_processed_cifar),
               verbose=1)
@@ -94,6 +94,10 @@ converter.representative_dataset = representative_dataset_gen
 converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
 converter.inference_input_type = tf.int8
 converter.inference_output_type = tf.int8
+
+# Force per-layer (per-tensor) quantization instead of per-channel quantization
+# This ensures one scale and zero point per layer rather than per output channel
+converter._experimental_disable_per_channel_quantization = True
 
 print("Starting TFLite conversion and quantization (this may take a moment)...")
 tflite_int8_weights_for_rom = None # Initialize in case of error
@@ -282,12 +286,12 @@ if tflite_int8_weights_for_rom:
          open(output_bias_zero_points_file,  "w") as f_bias_zp:
 
         # Write headers
-        f_conv_s.write("# Conv2D kernel quantization scales (per-tensor)\n")
-        f_conv_zp.write("# Conv2D kernel quantization zero points (per-tensor)\n")
-        f_dense_s.write("# Dense kernel quantization scales (per-tensor)\n")
-        f_dense_zp.write("# Dense kernel quantization zero points (per-tensor)\n")
-        f_bias_s.write("# Bias quantization scales (per-tensor)\n")
-        f_bias_zp.write("# Bias quantization zero points (per-tensor)\n")
+        f_conv_s.write("# Conv2D kernel quantization scales (per-layer/per-tensor)\n")
+        f_conv_zp.write("# Conv2D kernel quantization zero points (per-layer/per-tensor)\n")
+        f_dense_s.write("# Dense kernel quantization scales (per-layer/per-tensor)\n")
+        f_dense_zp.write("# Dense kernel quantization zero points (per-layer/per-tensor)\n")
+        f_bias_s.write("# Bias quantization scales (per-layer/per-tensor)\n")
+        f_bias_zp.write("# Bias quantization zero points (per-layer/per-tensor)\n")
 
         # Iterate over the extracted tensors
         for tensor_name in sorted(tflite_int8_weights_for_rom.keys()):
