@@ -1,5 +1,7 @@
 /testbenches/results.xml
 /testbenches/coverage.dat
 /testbenches/Makefile
-/testbenches/sim_biuld
+/testbenches/sim_build
 /testbenches/__pycache__
+/testbenches/dump.vcd
+/testbenches/full_trace_output.log
