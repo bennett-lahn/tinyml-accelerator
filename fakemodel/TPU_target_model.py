@@ -91,13 +91,27 @@ def representative_dataset_gen():
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
 converter.representative_dataset = representative_dataset_gen
+
+# Use legacy quantization approach to force per-tensor quantization
 converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS_INT8]
 converter.inference_input_type = tf.int8
 converter.inference_output_type = tf.int8
 
-# Force per-layer (per-tensor) quantization instead of per-channel quantization
-# This ensures one scale and zero point per layer rather than per output channel
+# Force per-tensor quantization using multiple methods
 converter._experimental_disable_per_channel_quantization = True
+
+# Try to use the older quantization path which defaults to per-tensor
+try:
+    # Disable newer quantization features that might enable per-channel
+    converter._experimental_new_quantizer = False
+except AttributeError:
+    pass
+
+# Set quantization to use symmetric quantization which is more likely to be per-tensor
+try:
+    converter._experimental_use_symmetric_quantization = True
+except AttributeError:
+    pass
 
 print("Starting TFLite conversion and quantization (this may take a moment)...")
 tflite_int8_weights_for_rom = None # Initialize in case of error
@@ -286,12 +300,12 @@ if tflite_int8_weights_for_rom:
          open(output_bias_zero_points_file,  "w") as f_bias_zp:
 
         # Write headers
-        f_conv_s.write("# Conv2D kernel quantization scales (per-layer/per-tensor)\n")
-        f_conv_zp.write("# Conv2D kernel quantization zero points (per-layer/per-tensor)\n")
-        f_dense_s.write("# Dense kernel quantization scales (per-layer/per-tensor)\n")
-        f_dense_zp.write("# Dense kernel quantization zero points (per-layer/per-tensor)\n")
-        f_bias_s.write("# Bias quantization scales (per-layer/per-tensor)\n")
-        f_bias_zp.write("# Bias quantization zero points (per-layer/per-tensor)\n")
+        f_conv_s.write("# Conv2D kernel quantization scales (averaged per-layer for hardware)\n")
+        f_conv_zp.write("# Conv2D kernel quantization zero points (averaged per-layer for hardware)\n")
+        f_dense_s.write("# Dense kernel quantization scales (averaged per-layer for hardware)\n")
+        f_dense_zp.write("# Dense kernel quantization zero points (averaged per-layer for hardware)\n")
+        f_bias_s.write("# Bias quantization scales (averaged per-layer for hardware)\n")
+        f_bias_zp.write("# Bias quantization zero points (averaged per-layer for hardware)\n")
 
         # Iterate over the extracted tensors
         for tensor_name in sorted(tflite_int8_weights_for_rom.keys()):
@@ -300,21 +314,25 @@ if tflite_int8_weights_for_rom:
             scales      = info['scales']
             zero_points = info['zero_points']
 
+            # Compute averaged scales and zero points for hardware simplicity
+            avg_scale = float(np.mean(scales))
+            avg_zero_point = int(np.mean(zero_points))
+
             # Conv2D kernels: 4D int8 tensors with 4×4 spatial dims
             if info['dtype'] == np.int8 and len(orig_shape) == 4 \
                and orig_shape[1] == 4 and orig_shape[2] == 4:
-                f_conv_s.write(f"{tensor_name}: {scales.tolist()}\n")
-                f_conv_zp.write(f"{tensor_name}: {zero_points.tolist()}\n")
+                f_conv_s.write(f"{tensor_name}: {avg_scale} (original per-channel: {scales.tolist()})\n")
+                f_conv_zp.write(f"{tensor_name}: {avg_zero_point} (original per-channel: {zero_points.tolist()})\n")
 
             # Dense kernels: 2D int8 tensors
             elif info['dtype'] == np.int8 and len(orig_shape) == 2:
-                f_dense_s.write(f"{tensor_name}: {scales.tolist()}\n")
-                f_dense_zp.write(f"{tensor_name}: {zero_points.tolist()}\n")
+                f_dense_s.write(f"{tensor_name}: {avg_scale} (original per-channel: {scales.tolist()})\n")
+                f_dense_zp.write(f"{tensor_name}: {avg_zero_point} (original per-channel: {zero_points.tolist()})\n")
 
             # Biases: int32 tensors
             elif info['dtype'] == np.int32:
-                f_bias_s.write(f"{tensor_name}: {scales.tolist()}\n")
-                f_bias_zp.write(f"{tensor_name}: {zero_points.tolist()}\n")
+                f_bias_s.write(f"{tensor_name}: {avg_scale} (original per-channel: {scales.tolist()})\n")
+                f_bias_zp.write(f"{tensor_name}: {avg_zero_point} (original per-channel: {zero_points.tolist()})\n")
 
     print(f"Quantization scales written to:")
     print(f"  {output_conv_scales_file}")
