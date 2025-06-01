@@ -43,6 +43,10 @@ module softmax_unit #(
     logic [$clog2(NUM_CLASSES)-1:0] class_counter;  // Properly sized counter (4 bits for NUM_CLASSES=10)
     logic [$clog2(NUM_CLASSES)-1:0] sum_counter;    // Properly sized counter (4 bits for NUM_CLASSES=10)
     
+    // Intermediate signal for full precision shifted logit
+    logic signed [8:0] temp_shifted_logit; // Can hold values from -255 to 0
+    assign temp_shifted_logit = logits[class_counter] - max_logit;
+    
     // 2^x LUT for hardware-friendly power-of-2 approximation
     // Covers range [-128, 127] (int8 range) with 256 entries
     // Values stored as 32-bit unsigned integers for excellent dynamic range
@@ -114,7 +118,6 @@ module softmax_unit #(
     
     // Local parameters for counter comparisons (properly sized)
     localparam logic [$clog2(NUM_CLASSES)-1:0] NUM_CLASSES_COUNTER = NUM_CLASSES[$clog2(NUM_CLASSES)-1:0];
-    localparam logic [$clog2(NUM_CLASSES)-1:0] NUM_CLASSES_MINUS_1 = 9; // TODO: Bad style, should be (NUM_CLASSES-1)[$clog2(NUM_CLASSES)-1:0]
     
     // Intermediate signals for combinational calculations
     logic [EXP_LUT_ADDR_WIDTH-1:0] current_lut_addr;
@@ -168,7 +171,7 @@ module softmax_unit #(
                         class_counter <= class_counter + 1'b1;
                     end
                     // Reset counter for next state when transitioning
-                    if (class_counter >= NUM_CLASSES_MINUS_1) begin
+                    if (class_counter == NUM_CLASSES_COUNTER - 1) begin
                         class_counter <= '0;
                     end
                 end
@@ -176,11 +179,18 @@ module softmax_unit #(
                 COMPUTE_SHIFTED: begin
                     // Compute shifted logits (subtract max for numerical stability)
                     if (class_counter < NUM_CLASSES_COUNTER) begin
-                        shifted_logits[class_counter] <= logits[class_counter] - max_logit;
+                        // Clamp the shifted logit to the range interpretable by logit_to_lut_addr (effectively [-128, 0])
+                        // Since logits[i] - max_logit <= 0, we only need to check lower bound.
+                        if (temp_shifted_logit < -128) begin
+                            shifted_logits[class_counter] <= -128;
+                        end else begin
+                            // temp_shifted_logit is already in [-128, 0], safe to cast to int8_t
+                            shifted_logits[class_counter] <= int8_t'(temp_shifted_logit); 
+                        end
                         class_counter <= class_counter + 1'b1;
                     end
                     // Reset counter for next state when transitioning
-                    if (class_counter >= NUM_CLASSES_MINUS_1) begin
+                    if (class_counter == NUM_CLASSES_COUNTER - 1) begin
                         class_counter <= '0;
                     end
                 end
@@ -192,7 +202,7 @@ module softmax_unit #(
                         class_counter <= class_counter + 1'b1;
                     end
                     // Reset counter for next state when transitioning
-                    if (class_counter >= NUM_CLASSES_MINUS_1) begin
+                    if (class_counter == NUM_CLASSES_COUNTER - 1) begin
                         class_counter <= '0;
                         sum_counter <= '0; // Also reset sum_counter for COMPUTE_SUM state
                     end
@@ -205,7 +215,7 @@ module softmax_unit #(
                         sum_counter <= sum_counter + 1'b1;
                     end
                     // Reset counter for next state when transitioning
-                    if (sum_counter >= NUM_CLASSES_MINUS_1) begin
+                    if (sum_counter == NUM_CLASSES_COUNTER - 1) begin
                         class_counter <= '0;
                     end
                 end
@@ -241,23 +251,23 @@ module softmax_unit #(
             end
             
             FIND_MAX: begin
-                if (class_counter >= NUM_CLASSES_MINUS_1) next_state = COMPUTE_SHIFTED;
+                if (class_counter == NUM_CLASSES_COUNTER - 1) next_state = COMPUTE_SHIFTED;
             end
             
             COMPUTE_SHIFTED: begin
-                if (class_counter >= NUM_CLASSES_MINUS_1) next_state = COMPUTE_EXP;
+                if (class_counter == NUM_CLASSES_COUNTER - 1) next_state = COMPUTE_EXP;
             end
             
             COMPUTE_EXP: begin
-                if (class_counter >= NUM_CLASSES_MINUS_1) next_state = COMPUTE_SUM;
+                if (class_counter == NUM_CLASSES_COUNTER - 1) next_state = COMPUTE_SUM;
             end
             
             COMPUTE_SUM: begin
-                if (sum_counter >= NUM_CLASSES_MINUS_1) next_state = COMPUTE_SOFTMAX;
+                if (sum_counter == NUM_CLASSES_COUNTER - 1) next_state = COMPUTE_SOFTMAX;
             end
             
             COMPUTE_SOFTMAX: begin
-                if (class_counter >= NUM_CLASSES_MINUS_1) next_state = DONE;
+                if (class_counter == NUM_CLASSES_COUNTER - 1) next_state = DONE;
             end
             
             DONE: begin
