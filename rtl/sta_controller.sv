@@ -13,6 +13,7 @@ module sta_controller #(
   ,input  logic reset_sta  // Separate reset for everything except output buffer
   ,input  logic stall
   ,input  logic bypass_maxpool
+  ,input  logic bypass_relu
   
   // Bypass inputs - used when bypass_maxpool is asserted
   ,input  logic   bypass_valid                      // Valid signal for bypass value
@@ -22,10 +23,10 @@ module sta_controller #(
   // Inputs for Output Coorditor (to start/define a block computation)
   ,input  logic [N_BITS-1:0]   controller_pos_row            // Base row for the output block
   ,input  logic [N_BITS-1:0]   controller_pos_col            // Base col for the output block
-  ,input  logic                         done                          // Signal from layer controller indicating computation is done
+  ,input  logic                done                          // Signal from layer controller indicating computation is done
 
   // Inputs for requantization controller
-  ,input  logic [2:0]                        layer_idx                     // Index of new layer for computation
+  ,input  logic [2:0]          layer_idx                     // Index of curent layer for computation
 
   // Inputs for systolic array
   // Systolic array controller assumes all inputs are already properly buffered/delayed for correct computation
@@ -44,12 +45,12 @@ module sta_controller #(
   ,input  logic                         load_bias                    // Single load_bias control signal
   ,input  int32_t                       bias_value                  // Single bias value to be used for all PEs
 
-  ,output logic                         idle    
-  ,output logic                         sta_idle
-  ,output logic                         array_out_valid               // High if corresponding val/row/col is valid
-  ,output logic [7:0]                   array_val_out                 // 8-bit value out (changed from 128-bit)
-  ,output logic [$clog2(MAX_N)-1:0]   array_row_out                 // Row for corresponding value
-  ,output logic [$clog2(MAX_N)-1:0]   array_col_out                 // Column for corresponding value
+  ,output logic                       idle    
+  ,output logic                       sta_idle
+  ,output logic                       array_out_valid               // High if corresponding val/row/col is valid
+  ,output logic [7:0]                 array_val_out                 // 8-bit value out (changed from 128-bit)
+  ,output logic [N_BITS-1:0]          array_row_out                 // Row for corresponding value
+  ,output logic [N_BITS-1:0]          array_col_out                 // Column for corresponding value
   ,output logic [BYPASS_IDX_BITS-1:0] array_index_out               // Index for corresponding value (bypass mode)
 );
 
@@ -224,6 +225,7 @@ module sta_controller #(
   ) requant_unit (
     .clk(clk)
     ,.reset(reset|reset_sta)
+    ,.bypass_relu(bypass_relu)
     ,.layer_idx(layer_idx)
     ,.in_valid(requant_in_valid_flat)
     ,.in_output(requant_in_val_flat)
