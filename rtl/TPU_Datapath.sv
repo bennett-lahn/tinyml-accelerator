@@ -14,8 +14,11 @@ module TPU_Datapath #(
     ,parameter int MAX_BYPASS_IDX  = 64                     // Max index value for bypass mode (fully connected layers)
     ,parameter int BYPASS_IDX_BITS = $clog2(MAX_BYPASS_IDX) // Bits to hold bypass index
     ,parameter int RAM_WORD_DEPTH  = 128                    // 128 words of 128 bits each to store first layer (largest layer)
+    ,parameter int RAM_WORD_WIDTH  = 128
     ,parameter int ROM_WEIGHT_DEPTH = 2696
-    ,parameter int ROM_BIAS_DEPTH  = 240
+    ,parameter int ROM_WEIGHT_WIDTH = 128
+    ,parameter int ROM_BIAS_DEPTH   = 240
+    ,parameter int ROM_BIAS_WIDTH   = 32
 )(
 ) (
     input logic clk
@@ -23,6 +26,8 @@ module TPU_Datapath #(
 
     ,input [$clog2(NUM_LAYERS)-1:0] layer_idx // Current layer index
     ,input [$clog2(MAX_NUM_CH)-1:0] chnnl_idx // Current output channel index
+    ,input [$clog2(MAX_N)-1:0] controller_pos_row
+    ,input [$clog2(MAX_N)-1:0] controller_pos_col
 
     ,input logic read_weights
     ,input logic read_inputs
@@ -30,20 +35,50 @@ module TPU_Datapath #(
     ,input logic read_bias
     ,input logic load_bias
 
-    ,input logic incr_weight_ptr
-    ,input logic incr_bias_ptr
     ,input logic incr_input_ptr
     ,input logic reset_sta
     ,input logic start
     ,input logic done
     ,input logic reset_ptr_A
     ,input logic reset_ptr_B
-    ,input logic reset_ptr_weight
+
+    ,input logic start_weight_load;
+    ,input logic start_spatial_formatting;
+    ,input logic next_col_request;
+    
+    //unified buffer configuration
+    ,input logic [$clog2(64+1)-1:0] img_width;
+    ,input logic [$clog2(64+1)-1:0] img_height;
+    ,input logic [$clog2(64+1)-1:0] num_channels;
 
     ,input [$clog2(MAX_PADDING+1)-1:0] pad_top
     ,input [$clog2(MAX_PADDING+1)-1:0] pad_bottom
     ,input [$clog2(MAX_PADDING+1)-1:0] pad_left
     ,input [$clog2(MAX_PADDING+1)-1:0] pad_right
+
+    //unified buffer control signals
+    ,input logic start_block_extraction
+    ,input logic next_channel_group
+    ,input logic next_spatial_block
+
+    ,input logic start_flatten
+
+    ,input logic softmax_start
+
+    //dense layer
+    ,input logic start_dense_compute
+    ,input logic input_valid_dense
+
+    // Runtime configuration inputs
+    ,input logic [$clog2(256+1)-1:0] input_size_dense    // Actual input size (up to 256)
+    ,input logic [$clog2(64+1)-1:0] output_size_dense
+
+
+
+
+
+
+    ,output logic [31:0] probabilities_o [9:0] // Index of the output value in the array
 );
 // ======================================================================================================
 // LAYER CONTROLLER
@@ -82,7 +117,7 @@ int32_t                        bias_value;                   // Single bias valu
 
 logic                          idle;                         // High if STA complex is idle
 logic                          array_out_valid;              // High if corresponding val/row/col is valid
-logic [127:0]                  array_val_out;                // Value out of max pool unit
+int8_t                         array_val_out;                // Value out of max pool unit
 logic [$clog2(MAX_N)-1:0]      array_row_out;                // Row for corresponding value
 logic [$clog2(MAX_N)-1:0]      array_col_out;                // Column for corresponding value
 
@@ -98,8 +133,6 @@ logic [$clog2(MAX_NUM_CH)-1:0] chnnl_idx;                    // Index of current
 logic                          reset_sta;
 logic [15:0]                   mat_size;
 logic                          start_compute;
-logic [$clog2(MAX_N)-1:0]      controller_pos_row;
-logic [$clog2(MAX_N)-1:0]      controller_pos_col;
 logic [$clog2(MAX_N)-1:0]      array_index_out;
 
 // Current layer filter dimensions
@@ -108,23 +141,32 @@ logic [$clog2(MAX_NUM_CH+1)-1:0] num_input_channels; // Number of input channels
 
 // Drive STA controller pool parameters
 logic 				           bypass_maxpool;
+logic                          bypass_relu;
+logic                          bypass_valid;
+logic [BYPASS_IDX_BITS-1:0]    bypass_index;
+int32_t                        bypass_value;
 
 // Drive STA inputs
-logic [31:0] A0;
-logic [31:0] A1;
-logic [31:0] A2;
-logic [31:0] A3;
-logic [31:0] B0;
-logic [31:0] B1;
-logic [31:0] B2;
-logic [31:0] B3;
+int8_t A0 [SA_VECTOR_WIDTH];
+int8_t A1 [SA_VECTOR_WIDTH];
+int8_t A2 [SA_VECTOR_WIDTH];
+int8_t A3 [SA_VECTOR_WIDTH];
+int8_t B0 [SA_VECTOR_WIDTH];
+int8_t B1 [SA_VECTOR_WIDTH];
+int8_t B2 [SA_VECTOR_WIDTH];
+int8_t B3 [SA_VECTOR_WIDTH];
 
 sta_controller sta_controller (
     .clk(clk)
     ,.reset(reset)
     ,.reset_sta(reset_sta)
     ,.stall('0)
+
     ,.bypass_maxpool(bypass_maxpool)
+    ,.bypass_relu(bypass_relu)
+    ,.bypass_valid(bypass_valid)
+    ,.bypass_value(bypass_value)
+
     ,.controller_pos_row(controller_pos_row)
     ,.controller_pos_col(controller_pos_col)
     ,.done(done)
@@ -160,8 +202,8 @@ logic [31:0] bias_rom_dout;
 assign BIAS_READ_EN = read_bias;
 bias_rom
 #(
-    .WIDTH(32)
-    ,.DEPTH(240)
+    .WIDTH(ROM_BIAS_WIDTH)
+    ,.DEPTH(ROM_BIAS_DEPTH)
     ,.INIT_FILE("../fakemodel/tflite_bias_weights.hex")
 )
 BIAS_ROM
@@ -225,7 +267,7 @@ logic [($clog2(RAM_WORD_DEPTH))-1:0] ram_B_addr_r;
 // Instantiate tensor_ram B
 tensor_ram
 #(
-    .READ_WIDTH(128)
+    .READ_WIDTH(RAM_WORD_WIDTH)
     , .DEPTH_WORDS(RAM_WORD_DEPTH)
     , .WRITE_WIDTH(8)
     , .INIT_FILE("")
@@ -284,13 +326,8 @@ end
 
 // Unified Buffer for spatial block extraction with channel iteration
 //current layer input image dimensions
-logic [$clog2(64+1)-1:0] img_width;
-logic [$clog2(64+1)-1:0] img_height;
-logic [$clog2(64+1)-1:0] num_channels;
-//unified buffer control signals
-logic start_block_extraction;
-logic next_channel_group;
-logic next_spatial_block;
+
+
 logic block_ready;
 logic block_extraction_complete;  
 logic all_channels_done;
@@ -363,8 +400,7 @@ UNIFIED_BUFFER
 );
 
 // Spatial Data Formatter - converts unified buffer patches to systolic array format
-logic start_spatial_formatting;
-logic next_col_request;
+
 logic formatted_data_valid;
 logic all_cols_sent;
 int8_t formatted_A0 [0:3]; // Row 0, 4 channels of current column position
@@ -398,39 +434,29 @@ spatial_data_formatter SPATIAL_FORMATTER
 // WEIGHT DATAPATH AND ROM
 //======================================================================================================
 
+    logic start_weight_load;
 
-    // Weight loader signals
-    logic weight_loader_start;
-    logic weight_loader_done;
-    logic weight_loader_valid;
-    logic [3:0] weight_loader_col_active;
-    logic [3:0] weight_loader_col_weight_position;
-    logic [3:0] weight_loader_col_state;
-    logic [3:0] weight_loader_col_next_state;
-    logic weight_loader_transitioning_to_next_channel_group;
-    logic weight_loader_all_columns_done;
-    logic weight_loader_all_columns_completed_zero_phase;
-    logic weight_loader_buffer_fully_loaded;
-    logic weight_loader_use_passthrough_col0;
-    logic [3:0] weight_loader_col_active;
-    logic [3:0] weight_loader_col_weight_position;
-    logic [3:0] weight_loader_col_state;
-    logic [3:0] weight_loader_col_next_state;
-    logic weight_loader_transitioning_to_next_channel_group;
-    logic weight_loader_all_columns_done;
-    logic weight_loader_all_columns_completed_zero_phase;
-    logic weight_loader_buffer_fully_loaded;
-    logic weight_loader_use_passthrough_col0;
+    logic weight_rom_read_enable;
+    logic [$clog2(ROM_WEIGHT_WIDTH)-1:0] weight_rom_addr;
+    int32_t weight_rom_dout0;
+    int32_t weight_rom_dout1;
+    int32_t weight_rom_dout2;
+    int32_t weight_rom_dout3;
+
+    logic weight_load_idle;
+    logic weight_load_complete;
 
     weight_loader # (
-
-
+        .MAX_NUM_CH(MAX_NUM_CH)
+        ,.SA_N(SA_N)
+        ,.VECTOR_WIDTH(VECTOR_WIDTH)
+        ,.ROM_DEPTH(ROM_WEIGHT_DEPTH)
     ) weight_loader (
         .clk(clk)
         ,.reset(reset)
-        ,.start(start)
-        ,.done(weight_loader_done)
+        ,.start(start_weight_load)
         ,.stall(stall)
+        
         ,.output_channel_idx(chnnl_idx)
         ,.layer_idx(layer_idx)
 
@@ -445,30 +471,25 @@ spatial_data_formatter SPATIAL_FORMATTER
         ,.B1(B1)
         ,.B2(B2)
         ,.B3(B3)
+
+        ,.idle(weight_load_idle)
+        ,.complete(weight_load_complete)
     );
 
-
-
-
-
-    logic [($clog2(16384))-1:0] weight_rom_addr; // Assuming 16384 is the depth of the weight ROM
+    logic [($clog2(ROM_WEIGHT_DEPTH))-1:0] weight_rom_addr; 
     int32_t weight_rom_dout0; // Output data from the weight ROM
     int32_t weight_rom_dout1; // Output data from the weight ROM
     int32_t weight_rom_dout2; // Output data from the weight ROM
     int32_t weight_rom_dout3; // Output data from the weight ROM
 
-    assign WEIGHT_READ_EN = read_weights; // Control signal to enable reading from weight ROM
     // ROM for weights, assuming 16 8-bit values per read
-    weight_rom 
-    #(
-        .WIDTH(128) // 4 8-bit pixels per read/write
-        , .DEPTH(16384) // Assuming IMG_W and IMG_H are defined in the module scope
-        , .INIT_FILE("../fakemodel/tflite_conv_kernel_weights.hex") // No initialization file specified
-    )
-    WEIGHT_ROM
-    (
+    weight_rom  #(
+        .WIDTH(ROM_WEIGHT_WIDTH) // 4 8-bit pixels per read/write
+        ,.DEPTH(ROM_WEIGHT_DEPTH) // Assuming IMG_W and IMG_H are defined in the module scope
+        ,.INIT_FILE("../fakemodel/tflite_conv_kernel_weights.hex") // No initialization file specified
+    ) weight_rom (
         .clk(clk)
-        ,.read_enable(WEIGHT_READ_EN)
+        ,.read_enable(weight_rom_read_enable)
         ,.addr(weight_rom_addr)
         ,.data0(weight_rom_dout0)
         ,.data1(weight_rom_dout1)
@@ -476,28 +497,226 @@ spatial_data_formatter SPATIAL_FORMATTER
         ,.data3(weight_rom_dout3)
     );
 
-    logic INCR_WEIGHT_PTR; // Control signal to increment the weight pointer
-    // logic reset_ptr_weight;
-    pointer weight_pointer
-     (
+//======================================================================================================
+// FLATTEN
+//======================================================================================================
+
+
+logic chunk_valid; // Indicates if the current chunk of input data is valid
+logic [127:0] input_chunk; // 128-bit input chunk (16 int8_t values)
+logic request_chunk; // Request next 128-bit chunk
+logic [$clog2(64)-1:0] chunk_addr; // Current chunk address (0-63)
+logic output_read_enable; // Enable reading output data
+logic [31:0] input_data [0:64-1]; // Input data from previous layer
+logic [$clog2(2)-1:0] input_row;
+logic [$clog2(2)-1:0] input_col;
+
+logic int8_t output_data; // Output data (one element at a time)
+logic [$clog2(256)-1:0] output_addr; // Current output address
+logic output_valid; // Indicates output data is valid
+logic flatten_complete; // Indicates flattening is complete
+logic all_outputs_sent; // Indicates all data has been output
+
+
+flatten_layer #(
+    .INPUT_HEIGHT(IMG_H)
+    ,.INPUT_WIDTH(IMG_W)
+    ,.INPUT_CHANNELS(MAX_NUM_CH)
+    ,.CHUNK_SIZE(16) // 128 bits = 16 int8_t values
+    ,.TOTAL_CHUNKS((IMG_H * IMG_W * MAX_NUM_CH) / 16) // Total chunks based on input dimensions
+    ,.OUTPUT_SIZE(IMG_H * IMG_W * MAX_NUM_CH) // Total output size
+) flatten_layer (
+    .clk(clk)
+    ,.reset(reset)
+
+    // Control signals
+    ,.start_flatten(start_flatten)
+    ,.output_read_enable(output_read_enable)
+
+    // Input data (128-bit chunk)
+    ,.input_chunk(input_chunk)
+    ,.chunk_valid(chunk_valid)
+
+    // Output data (one pixel at a time)
+    ,.output_data(output_data)
+    ,.output_addr(output_addr)
+    ,.output_valid(output_valid)
+    ,.flatten_complete(flatten_complete)
+
+    // Memory request signals
+    ,.request_chunk(request_chunk)
+    ,.chunk_addr(chunk_addr)
+);
+
+//======================================================================================================
+// DENSE fully connected ram
+
+    logic dense_fc_write_enable;
+    logic [($clog2(256))-1:0] dense_fc_read_addr;
+    logic [($clog2(256))-1:0] dense_fc_write_addr;
+    logic [7:0] dense_fc_data_in;
+    logic [7:0] dense_fc_data_out;
+    logic dense_fc_read_enable;
+
+
+    dense_fc_ram
+    #(
+        .DEPTH(256) // 256 words of 8 bits each
+        ,.WIDTH(8) // 8 bits per word
+        ,.INIT_FILE("../fakemodel/tflite_dense_fc_weights.hex") // Initialization file for weights
+    ) dense_fc_ram (
         .clk(clk)
         ,.reset(reset)
-        ,.reset_ptr(reset_ptr_weight)
-        ,.rst_ptr_val(0)
-        ,.incr_ptr(INCR_WEIGHT_PTR) // Assuming this is the control signal to increment the pointer
-        ,.ptr(weight_rom_addr) // Output pointer for reading from weight_rom
-     );
+        ,.write_enable(dense_fc_write_enable)
+        ,.read_addr(dense_fc_read_addr)
+        ,.write_addr(dense_fc_write_addr)
+        ,.read_enable(dense_fc_read_enable)
+        ,.(dense_fc_read_addr)
+        ,.data_in(dense_fc_data_in)
+        ,.data_out(dense_fc_data_out)
+    );
 
-    //======================================================================================================
 
-    int8_t weight_C0 [0:3]; // Assuming 4 input channels for the sliding window weights
-    int8_t weight_C1 [0:3]; // Assuming 4 input channels for the sliding window weights
-    int8_t weight_C2 [0:3]; // Assuming 4 input channels for the sliding window weights
-    int8_t weight_C3 [0:3]; // Assuming 4 input channels for the sliding window weights
-    logic valid_C0; // Valid signal for weight_C0
-    logic valid_C1; // Valid signal for weight_C1
-    logic valid_C2; // Valid signal for weight_C2
-    logic valid_C3; // Valid signal for weight_C3
-    logic done_WEIGHTS; // Signal indicating the sliding window operation for weights is done
+//======================================================================================================
+// FC_bias_rom
+
+    logic fc_bias_rom_read_enable;
+    logic fc_layer_select;
+    logic [$clog2(72)-1:0] fc_bias_rom_addr; // Address for bias ROM
+    logic [31:0] fc_bias_rom_dout; // Output data from the bias ROM
+
+    fc_bias_rom
+    #(
+        .WIDTH(32) // 32 bits per word
+        ,.DEPTH(72) // 72 words for the fully connected layer
+        ,.INIT_FILE("../fakemodel/tflite_fc_bias_weights.hex") // Initialization file for bias weights
+        ,.FC1_SIZE(64) // Size of the first fully connected layer
+        ,.FC2_SIZE(10) // Size of the second fully connected layer
+    ) fc_bias_rom (
+        .clk(clk)
+        ,.read_enable(fc_bias_rom_read_enable)
+        ,.layer_select(fc_layer_select)
+        ,.addr(fc_bias_rom_addr)
+        ,.data_out(fc_bias_rom_dout)
+    );
+
+
+//======================================================================================================
+//DENSE WEIGHT ROM
+    logic dense_weight_rom_read_enable;
+    logic [$clog2(256*64)-1:0] dense_weight_rom_addr; // Address for weight ROM
+    logic [7:0] dense_weight_rom_dout; // Output data from the weight ROM
+
+    dense_weight_rom
+    #(
+        .WIDTH(8) // 8 bits per word
+        ,.DEPTH(256*64) // 256 input channels, 64 output channels
+        ,.INIT_FILE("../fakemodel/tflite_dense_weights.hex") // Initialization file for weights
+    ) dense_weight_rom (
+        .clk(clk)
+        ,.read_enable(dense_weight_rom_read_enable)
+        ,.addr(dense_weight_rom_addr)
+        ,.data_out(dense_weight_rom_dout)
+    );
+
+//======================================================================================================
+
+        // Actual output size (up to 64)
+    
+    // Tensor RAM interface (for input vectors)
+    logic [$clog2(256)-1:0] tensor_ram_addr,
+    logic tensor_ram_re,
+    logic [7:0] tensor_ram_dout,
+    
+    // Weight ROM interface (for weight matrix)
+    logic [$clog2(256*64)-1:0] weight_rom_addr,
+    logic weight_rom_re,
+    logic [7:0] weight_rom_dout,
+    
+    // Bias ROM interface (for bias vectors)
+    logic [$clog2(64)-1:0] bias_rom_addr,
+    logic bias_rom_re,
+    logic [31:0] bias_rom_dout,
+    
+    // Single output (one result at a time)
+    logic [31:0] output_data,
+    logic [$clog2(64)-1:0] output_channel,  // Which output channel this result is for
+    logic [$clog2(64)-1:0] output_addr, // Current input size for this layer
+    logic output_ready,                     // Indicates output_data is valid for current channel
+    logic computation_complete,             // All outputs computed
+
+    dense_layer_compute
+    (
+        .clk(clk)
+        ,.reset(reset)
+        // Control signals
+        ,.start_compute(start_dense_compute)
+        ,.input_valid(input_valid_dense)
+        // Runtime configuration inputs
+        ,.input_size(input_size_dense)
+        ,.output_size(output_size_dense)
+        // Tensor RAM interface (for input vectors)
+        ,.tensor_ram_addr(tensor_ram_addr)
+        ,.tensor_ram_re(tensor_ram_re)
+        ,.tensor_ram_dout(tensor_ram_dout)
+        // Weight ROM interface (for weight matrix)
+        ,.weight_rom_addr(weight_rom_addr)
+        ,.weight_rom_re(weight_rom_re)
+        ,.weight_rom_dout(weight_rom_dout)
+        // Bias ROM interface (for bias vectors)
+        ,.bias_rom_addr(bias_rom_addr)
+        ,.bias_rom_re(bias_rom_re)
+        ,.bias_rom_dout(bias_rom_dout)
+        // Single output (one result at a time)
+        ,.output_data(output_data) //TODO Send to requantize
+        ,.output_channel(output_channel)  // Which output channel this result is for
+        ,.output_addr(output_addr) // Current input size for this layer TODO: send to requantize
+        ,.output_ready(output_ready)                     // Indicates output_data is valid for current channel
+        ,.computation_complete(computation_complete)             // All outputs computed
+        // Status outputs
+        ,.current_input_size(current_input_size)
+        ,.current_output_size(current_output_size)
+
+    );
+    assign fc_bias_rom_read_enable = bias_rom_re;
+    assign fc_bias_rom_addr = bias_rom_addr;
+    assign bias_rom_dout = fc_bias_rom_dout;
+    assign dense_weight_rom_read_enable = weight_rom_re;
+    assign dense_weight_rom_addr = weight_rom_addr;
+    assign weight_rom_dout = dense_weight_rom_dout;
+    assign dense_fc_read_enable = tensor_ram_re;
+    assign dense_fc_read_addr = tensor_ram_addr;
+    assign dense_fc_write_addr = array_index_out//TODO: connect to requantize
+    assign dense_fc_data_in = array_val_out// TODO: connect to requantize 
+    assign tensor_ram_dout = dense_fc_data_out;
+    assign bypass_maxpool = output_data;
+    assign  bypass_index = output_addr; // Assuming output_addr is used for bypass index
+
+
+//======================================================================================================
+// SOFTMAX
+    
+    logic softmax_valid;
+    logic softmax_ready; // Indicates softmax output is ready
+
+    logic int8_t logits [9:0]; // 
+    logic signed [31:0] probabilities [9:0]; // Output data from softmax layer
+
+
+    softmax_layer #(
+        .NUM_CLASSES(10)
+        ,.OUTPUT_WIDTH(32) 
+        ,.EXP_LUT_ADDR_WIDTH(8)
+        ,.EXP_LUT_WIDTH(32) // 256 entries for exponentiation lookup table
+        ,.EXP_LUT_INIT_FILE("../rtl/exp_lut.hex") // Initialization file for exponentiation LUT
+    ) softmax_layer (
+        .clk(clk)
+        ,.reset(reset)
+        ,.start(softmax_start)
+        ,.logits(logits) // Input logits from previous layer
+        ,.probabilities(probabilities) // Output probabilities
+        ,.valid(softmax_valid) // Indicates softmax output is valid
+        ,.ready(softmax_ready) // Indicates softmax output is ready
+    );
     
 endmodule

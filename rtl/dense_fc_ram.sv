@@ -8,7 +8,8 @@ module dense_fc_ram
   input logic clk
   ,input logic reset
   ,input logic write_enable
-  ,input logic [$clog2(DEPTH)-1:0] addr
+  ,input logic [$clog2(DEPTH)-1:0] read_addr
+  ,input logic [$clog2(DEPTH)-1:0] write_addr
   ,input logic read_enable
   ,input logic [WIDTH-1:0] data_in
   ,output logic [WIDTH-1:0] data_out
