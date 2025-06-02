@@ -1,12 +1,10 @@
 `include "sys_types.svh"
 
-// TODO: Update to change requantize parameters per output channel not layer
-
 module requantize_controller #(
   parameter int SA_N               = 4   // # of buffer/quant pairs
   ,parameter int NUM_LAYERS        = 6   // # of layers in model
   ,parameter int MISC_LAYER_IDX    = -1  // index for misc scales
-  ,parameter int SPECIAL_LAYER_IDX = 7   // layer that uses special zero-point
+  ,parameter int SPECIAL_LAYER_IDX = 5   // layer that uses special zero-point
   ,parameter int MULT_WIDTH        = 32  // bit-width for multipliers
   ,parameter int SHIFT_WIDTH       = 6   // bit-width for shifts
   ,parameter int MAX_N             = 64  // Max rows/cols in buffer
@@ -17,6 +15,7 @@ module requantize_controller #(
 
   // Current layer
   ,input  logic signed[$clog2(NUM_LAYERS+1)-1:0] layer_idx
+  ,input  logic bypass_relu // High if RELU function should be bypassed
 
   // Write-side: parallel write ports to all buffers
   ,input  logic              in_valid  [SA_N*4]
@@ -103,21 +102,34 @@ module requantize_controller #(
   // === Shared quantization parameters for all channels ===
   logic choose_zero_point;
 
-  assign choose_zero_point = (layer_idx == SPECIAL_LAYER_IDX[2:0]);
+  assign choose_zero_point = (layer_idx == ($clog2(NUM_LAYERS+1))'(SPECIAL_LAYER_IDX));
+
+  // === ReLU6 Quantization Range LUT ===
+  // Provides QMIN and QMAX values for each layer's ReLU6 activation
+  logic signed [7:0] qmin_lut;
+  logic signed [7:0] qmax_lut;
+
+  // All ReLU6 values are correct in this LUT
+  always_comb begin
+    case (layer_idx)
+      3: qmax_lut = -102; 
+      4: qmax_lut = -103;
+      default: begin qmax_lut = 127; end
+    endcase
+  end
 
   // === Requantize/Activate Units and Control ===
   genvar ch;
   generate
     for (ch = 0; ch < SA_N; ch++) begin : QUANTIZE_UNIT
       // Connect buffer output to quant unit
-      requantize_activate_unit #(
-        .QMIN(-128)
-        ,.QMAX(127)
-      ) qa_inst (
+      requantize_activate_unit qa_inst (
         .acc(buf_out_output[ch])
         ,.quant_mult(input_mult)
         ,.shift(input_shift)
         ,.choose_zero_point(choose_zero_point)
+        ,.bypass_relu(bypass_relu)
+        ,.qmax_in(qmax_lut)
         ,.out(out_data[ch])
       );
 

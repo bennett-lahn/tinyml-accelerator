@@ -15,6 +15,13 @@ module requantize_scale_rom #(
   // ROM storage
   logic [MULT_WIDTH+SHIFT_WIDTH-1:0] rom [NUM_LAYERS];
 
+  // Address bounds checking
+  always_ff @(posedge clk) begin
+    if (valid && layer_idx >= NUM_LAYERS) begin
+      $display("ERROR: requantize_scale_rom address out of bounds at time %0t! layer_idx=%d, max_valid_idx=%d", $time, layer_idx, NUM_LAYERS-1);
+    end
+  end
+
   // Synchronous read
   always_ff @(posedge clk) begin
     if (valid) begin

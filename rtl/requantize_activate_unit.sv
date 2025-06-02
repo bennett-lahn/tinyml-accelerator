@@ -4,20 +4,21 @@
 // May will result in minor errors that can be compensated for with quantization aware training (or ignored)
 // This module likely needs to be pipelined; multiply+shift+shift+shift is a lot for one cycle
 // but it's fine for now.
-module requantize_activate_unit #(
-  // Quantization parameters for the output tensor:
-  parameter integer QMIN       = -128        // min int8 after ReLU6
-  ,parameter integer QMAX       = 127        // max int8 after ReLU6
-)(
-  input int32_t acc                          // int32 MAC result + bias
-  ,input int32_t quant_mult                  // fixed-point multiplier; quant_mult and shift are used to represent the flop scale value as integer
-  ,input  logic signed [5:0]  shift          // right‐shift amount (can be negative)
-  ,input logic choose_zero_point             // output zero‐point; 0 if normal, 1 if special (1 only used for last Conv2D in model)
-  ,output int8_t  out                        // requantized + ReLU6 output
+module requantize_activate_unit (
+  input   int32_t acc                         // int32 MAC result + bias
+  ,input  int32_t quant_mult                  // fixed-point multiplier; quant_mult and shift are used to represent the flop scale value as integer
+  ,input  logic signed [5:0] shift            // right‐shift amount (can be negative)
+  ,input  logic choose_zero_point             // output zero‐point; 0 if normal, 1 if special (1 only used for last dense layer in model)
+  ,input  logic bypass_relu                   // High if relu should be bypassed
+  ,input  int8_t qmax_in                      // max int8 value for ReLU6 clamping
+  ,output int8_t out                          // requantized + ReLU6 output
 );
 
   localparam int32_t norm_zero_point = -128;
-  localparam int32_t special_zero_point = -1;
+  localparam int32_t special_zero_point = -16;
+  int32_t zero_point;
+
+  assign zero_point = (choose_zero_point) ? special_zero_point : norm_zero_point;
 
   // MultiplyByQuantizedMultiplier: (acc * M) with rounding, then shift
   // - Multiplies the 32-bit accumulator by a fixed-point multiplier (M).
@@ -52,10 +53,18 @@ module requantize_activate_unit #(
     scaled = MultiplyByQuantizedMultiplier(acc, quant_mult, shift);
     // Add output zero-point
     with_zp = scaled + ((choose_zero_point) ? special_zero_point : norm_zero_point);
-    // Clamp to [QMIN, QMAX] (implements quantized ReLU6)
-    if      (with_zp < QMIN) clamped = int8_t'(QMIN);
-    else if (with_zp > QMAX) clamped = int8_t'(QMAX);
-    else                      clamped = with_zp[7:0];
+    // Clamp to [QMIN, QMAX] (implements quantized ReLU6) or full int8 range if bypassing ReLU
+    if (bypass_relu) begin
+      // Bypass ReLU: clamp to full int8 range
+      if      (with_zp < -128) clamped = int8_t'(-128);
+      else if (with_zp > 127)  clamped = int8_t'(127);
+      else                     clamped = with_zp[7:0];
+    end else begin
+      // Normal ReLU6: clamp to [qmin_in, qmax_in]
+      if      (with_zp < zero_point) clamped = int8_t'(zero_point);
+      else if (with_zp > qmax_in)    clamped = int8_t'(qmax_in);
+      else                           clamped = with_zp[7:0];
+    end  
     out = clamped;
   end
 
