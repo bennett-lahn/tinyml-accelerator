@@ -32,6 +32,13 @@ module bias_rom #(
         end
     end
 
+    // Address bounds checking
+    always_ff @(posedge clk) begin
+        if (read_enable && addr >= DEPTH) begin
+            $display("ERROR: bias_rom address out of bounds at time %0t! addr=%d, max_valid_addr=%d", $time, addr, DEPTH-1);
+        end
+    end
+
     always_ff @(posedge clk) begin
         if (read_enable) begin
             bias_out <= rom[addr];

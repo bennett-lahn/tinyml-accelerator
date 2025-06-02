@@ -26,6 +26,14 @@ module dense_fc_ram
     end
   end
 
+  // Address bounds checking
+  always_ff @(posedge clk) begin
+    if ((write_enable || read_enable) && addr >= DEPTH) begin
+      $display("ERROR: dense_fc_ram address out of bounds at time %0t! addr=%d, max_valid_addr=%d, write_enable=%b, read_enable=%b", 
+               $time, addr, DEPTH-1, write_enable, read_enable);
+    end
+  end
+
   always_ff @(posedge clk) begin
     if (write_enable) begin
       ram[addr] <= data_in;

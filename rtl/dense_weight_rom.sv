@@ -12,6 +12,7 @@ module dense_weight_rom
   ,output logic [WIDTH-1:0] weight_out
 );
 
+  logic [WIDTH-1:0] rom [DEPTH];
 
   // Initialize the ROM with weights
   initial begin
@@ -26,14 +27,16 @@ module dense_weight_rom
     end
   end
 
-    logic [WIDTH-1:0] rom [DEPTH];
-
-    always_ff @(posedge clk) begin
-        if (read_enable) begin
-            weight_out <= rom[addr];
-        end
+  // Address bounds checking
+  always_ff @(posedge clk) begin
+    if (read_enable && addr >= DEPTH) begin
+      $display("ERROR: dense_weight_rom address out of bounds at time %0t! addr=%d, max_valid_addr=%d", $time, addr, DEPTH-1);
     end
+  end
+
+  always_ff @(posedge clk) begin
+    if (read_enable) begin
+      weight_out <= rom[addr];
+    end
+  end
 endmodule
-
-
-

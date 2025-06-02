@@ -274,6 +274,14 @@ module unified_buffer #(
     assign ram_addr = calculated_addr;
     assign ram_re = (state == LOADING_BLOCK) && !loading_cycle_complete && address_valid && !in_padding_region;
     
+    // Address bounds checking
+    always_ff @(posedge clk) begin
+        if (ram_re && calculated_addr > max_valid_addr) begin
+            $display("ERROR: unified_buffer ram address out of bounds at time %0t! calculated_addr=%d, max_valid_addr=%d, mem_row=%d, mem_col=%d, img_width=%d, img_height=%d", 
+                     $time, calculated_addr, max_valid_addr, mem_row, mem_col, img_width, img_height);
+        end
+    end
+    
     // Store loaded data into 7x7 buffer
     // Need to delay by one cycle to properly capture RAM data
     logic ram_re_delayed;

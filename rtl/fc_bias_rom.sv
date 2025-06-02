@@ -46,6 +46,14 @@ module fc_bias_rom #(
         end
     end
 
+    // Address bounds checking
+    always_ff @(posedge clk) begin
+        if (read_enable && actual_addr >= DEPTH) begin
+            $display("ERROR: fc_bias_rom address out of bounds at time %0t! actual_addr=%d, max_valid_addr=%d, fc_layer_select=%b, addr=%d", 
+                     $time, actual_addr, DEPTH-1, fc_layer_select, addr);
+        end
+    end
+
     always_ff @(posedge clk) begin
         if (read_enable) begin
             bias_out <= rom[actual_addr];
