@@ -30,6 +30,7 @@ module dense_layer_compute (
     // Single output (one result at a time)
     output logic [31:0] output_data,
     output logic [$clog2(64)-1:0] output_channel,  // Which output channel this result is for
+    output logic [$clog2(64)-1:0] output_addr,     // Address of calculated value (counts up from 0)
     output logic output_ready,                     // Indicates output_data is valid for current channel
     output logic computation_complete,             // All outputs computed
     
@@ -57,6 +58,7 @@ module dense_layer_compute (
     // Computation counters
     logic [$clog2(256)-1:0] input_idx;   // Current input index within current output
     logic [$clog2(64)-1:0] output_idx;   // Current output index
+    logic [$clog2(64)-1:0] addr_counter;  // Simple address counter (0, 1, 2, ...)
     logic computation_done;              // Flag to indicate computation is complete
     
     // MAC interface signals
@@ -126,6 +128,7 @@ module dense_layer_compute (
             current_state <= IDLE;
             input_idx <= 0;
             output_idx <= 0;
+            addr_counter <= 0;
             computation_done <= 0;
         end else begin
             current_state <= next_state;
@@ -135,6 +138,7 @@ module dense_layer_compute (
                     if (start_compute && input_valid) begin
                         input_idx <= 0;
                         output_idx <= 0;
+                        addr_counter <= 0;
                         computation_done <= 0;
                     end
                 end
@@ -176,9 +180,10 @@ module dense_layer_compute (
                 OUTPUT_READY: begin
                     // Output is ready for downstream module to consume
                     // Stay in this state for one cycle to allow downstream to capture
-                    // Increment output_idx here AFTER output is captured
+                    // Increment output_idx and addr_counter here AFTER output is captured
                     if (output_idx < output_size[$clog2(64)-1:0] - 1) begin
                         output_idx <= output_idx + 1;
+                        addr_counter <= addr_counter + 1;
                         // Reset input_idx for next output computation
                         input_idx <= 0;
                     end
@@ -266,6 +271,7 @@ module dense_layer_compute (
     // Output assignments
     assign output_data = mac_sum_out;
     assign output_channel = output_idx;
+    assign output_addr = addr_counter;
     assign output_ready = (current_state == OUTPUT_READY);
     assign computation_complete = (current_state == COMPLETE);
 
