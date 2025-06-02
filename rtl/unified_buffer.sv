@@ -35,6 +35,11 @@ module unified_buffer #(
     output logic all_channels_done,  // All channel groups for current spatial block processed
     output logic buffer_loading_complete, // Buffer is fully loaded with valid data
     
+    // Address calculation outputs (without padding offset)
+    output logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr,  // Block start column in image coordinates
+    output logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr,  // Block start row in image coordinates
+    output logic block_coords_valid,  // Indicates if the address coordinates are valid (not in padding)
+    
     // Data outputs: All 7x7 positions for spatial streaming (not just 4x4 patches)
     output logic [31:0] patch_pe00_out, patch_pe01_out, patch_pe02_out, patch_pe03_out, patch_pe04_out, patch_pe05_out, patch_pe06_out,
     output logic [31:0] patch_pe10_out, patch_pe11_out, patch_pe12_out, patch_pe13_out, patch_pe14_out, patch_pe15_out, patch_pe16_out,
@@ -395,5 +400,21 @@ module unified_buffer #(
     assign extraction_complete = (state == IDLE) && (32'(block_start_row) >= 32'(padded_height) - PATCHES_PER_BLOCK);
     assign all_channels_done = (state == WAIT_NEXT_SPATIAL);
     assign buffer_loading_complete = loading_complete;
+    
+    // Calculate address coordinates (without padding offset)
+    logic signed [$clog2(MAX_IMG_W + 2*MAX_PADDING)-1:0] image_start_col, image_start_row;
+    
+    // Convert padded coordinates to image coordinates
+    assign image_start_col = block_start_col + ($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left);
+    assign image_start_row = block_start_row + ($clog2(MAX_IMG_H + 2*MAX_PADDING))'(pad_top);
+    
+    // Check if block start is within valid image bounds and convert to unsigned
+    assign block_coords_valid = (image_start_col >= 0) && 
+                               (image_start_col < img_width) && 
+                               (image_start_row >= 0) && 
+                               (image_start_row < img_height);
+    
+    assign block_start_col_addr = block_coords_valid ? ($clog2(MAX_IMG_W))'(image_start_col) : '0;
+    assign block_start_row_addr = block_coords_valid ? ($clog2(MAX_IMG_H))'(image_start_row) : '0;
 
 endmodule 

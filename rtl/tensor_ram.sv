@@ -25,7 +25,6 @@ module tensor_ram #(
 
     // Read address: 128-bit word-granular
     ,input  logic [ADDR_BITS-1:0]      read_addr
-    ,output logic [127:0]                             data_out
     
     // 32-bit outputs: data3 is LSB, data0 is MSB of 128-bit word
     ,output logic [31:0]                              ram_dout0      // MSB [127:96]
@@ -44,6 +43,7 @@ module tensor_ram #(
 
     // Memory banks: NUM_BANKS banks, each BANK_DEPTH_ENTRIES deep, BANK_WIDTH_BITS wide
     logic [BANK_WIDTH_BITS-1:0] banks [NUM_BANKS-1:0] [BANK_DEPTH_ENTRIES-1:0];
+    logic [127:0] data_out;
 
     // Optional initialization for simulation
     initial begin
@@ -98,12 +98,12 @@ module tensor_ram #(
     logic [$clog2(NUM_BANKS)-1:0]          bank_select_for_write;
     logic [$clog2(BANK_DEPTH_ENTRIES)-1:0] bank_address_for_write;
 
+    assign bank_select_for_write  = write_addr[$clog2(NUM_BANKS)-1:0];
+    assign bank_address_for_write = write_addr >> $clog2(NUM_BANKS);
+
     always_ff @(posedge clk) begin
         // Write one byte into the appropriate bank and location
         if (write_en) begin
-            bank_select_for_write  = write_addr[$clog2(NUM_BANKS)-1:0];
-            bank_address_for_write = write_addr >> $clog2(NUM_BANKS);
-            
             banks[bank_select_for_write][bank_address_for_write] <= data_in;
         end
 

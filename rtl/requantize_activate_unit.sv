@@ -62,7 +62,7 @@ module requantize_activate_unit (
     end else begin
       // Normal ReLU6: clamp to [qmin_in, qmax_in]
       if      (with_zp < zero_point) clamped = int8_t'(zero_point);
-      else if (with_zp > qmax_in)    clamped = int8_t'(qmax_in);
+      else if (with_zp > int32_t'(qmax_in))    clamped = int8_t'(qmax_in);
       else                           clamped = with_zp[7:0];
     end  
     out = clamped;

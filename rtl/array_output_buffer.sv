@@ -1,6 +1,7 @@
 `include "sys_types.svh"
 
 // TODO: Consider how buffer bypassing affects critical path, whether it is necessary
+/*verilator lint_off UNOPTFLAT*/
 
 module array_output_buffer #(
   parameter int MAX_N  = 512
@@ -220,5 +221,7 @@ module array_output_buffer #(
     end
     idle = (count == '0 && ~(in_valid[0] & in_valid[1] & in_valid[2] & in_valid[3])) ? 1'b1 : 1'b0; 
   end // always_comb
+
+/*verilator lint_on UNOPTFLAT*/
 
 endmodule

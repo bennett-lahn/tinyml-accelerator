@@ -32,16 +32,8 @@ module dense_layer_compute (
     output logic [$clog2(64)-1:0] output_channel,  // Which output channel this result is for
     output logic [$clog2(64)-1:0] output_addr,     // Address of calculated value (counts up from 0)
     output logic output_ready,                     // Indicates output_data is valid for current channel
-    output logic computation_complete,             // All outputs computed
-    
-    // Status outputs
-    output logic [$clog2(256+1)-1:0] current_input_size,
-    output logic [$clog2(64+1)-1:0] current_output_size
+    output logic computation_complete             // All outputs computed
 );
-
-    // Echo back the input configuration
-    assign current_input_size = input_size;
-    assign current_output_size = output_size;
 
     // State machine for dense computation
     typedef enum logic [2:0] {

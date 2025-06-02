@@ -17,7 +17,7 @@ module requantize_scale_rom #(
 
   // Address bounds checking
   always_ff @(posedge clk) begin
-    if (valid && layer_idx >= NUM_LAYERS) begin
+    if (valid && layer_idx >= ($clog2(NUM_LAYERS))'(NUM_LAYERS)) begin
       $display("ERROR: requantize_scale_rom address out of bounds at time %0t! layer_idx=%d, max_valid_idx=%d", $time, layer_idx, NUM_LAYERS-1);
     end
   end

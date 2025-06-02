@@ -10,15 +10,14 @@ module softmax_unit #(
    ,parameter int EXP_LUT_ADDR_WIDTH = 8 // 256 entry LUT for 2^x approximation
    ,parameter int EXP_LUT_WIDTH = 32   // Width of 2^x LUT values (32-bit for better range)
    ,parameter int BETA = 1              // Temperature parameter (fixed at 1)
-
-    ,parameter string INIT_FILE = "../rtl/exp_lut.hex"
+   ,parameter string INIT_FILE = "../rtl/exp_lut.hex"
 )(
    input  logic clk,
    input  logic reset,
    input  logic start,                 // Start softmax computation
-   input  int8_t logits [NUM_CLASSES-1:0], // Input logits array (int8: -128 to +127)
-   output logic signed [OUTPUT_WIDTH-1:0] probabilities [NUM_CLASSES-1:0], // Output probabilities (Q1.31)
-   output logic valid,                 // Output valid signal
+   input  int8_t logits [NUM_CLASSES], // Input logits array (int8: -128 to +127)
+   output logic signed [OUTPUT_WIDTH-1:0] probabilities [NUM_CLASSES], // Output probabilities (Q1.31)
+   output logic valid                 // Output valid signal
 );
 
    // State machine for pipelined softmax computation
@@ -36,8 +35,8 @@ module softmax_unit #(
    
    // Internal registers and signals
    int8_t max_logit;
-   int8_t shifted_logits [NUM_CLASSES-1:0];
-   logic [EXP_LUT_WIDTH-1:0] exp_values [NUM_CLASSES-1:0];  // 32-bit 2^x values
+   int8_t shifted_logits [NUM_CLASSES];
+   logic [EXP_LUT_WIDTH-1:0] exp_values [NUM_CLASSES];  // 32-bit 2^x values
    logic [EXP_LUT_WIDTH+4:0] exp_sum;  // Extra bits to prevent overflow during summation (36-bit)
    logic [$clog2(NUM_CLASSES)-1:0] class_counter;  // Properly sized counter (4 bits for NUM_CLASSES=10)
    logic [$clog2(NUM_CLASSES)-1:0] sum_counter;    // Properly sized counter (4 bits for NUM_CLASSES=10)

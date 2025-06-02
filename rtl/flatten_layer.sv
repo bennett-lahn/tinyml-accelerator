@@ -84,11 +84,11 @@ module flatten_layer #(
                 end
                 
                 OUTPUT_CHUNK: begin
-                    if (output_read_enable && pixel_index < CHUNK_SIZE - 1) begin
+                    if (pixel_index < CHUNK_SIZE - 1) begin
                         // Move to next pixel in chunk
                         pixel_index <= pixel_index + 1;
                         total_pixel_addr <= total_pixel_addr + 1;
-                    end else if (output_read_enable && pixel_index >= CHUNK_SIZE - 1) begin
+                    end else if (pixel_index >= CHUNK_SIZE - 1) begin
                         // Finished current chunk, prepare for next
                         pixel_index <= 0;
                         total_pixel_addr <= total_pixel_addr + 1;
@@ -129,7 +129,7 @@ module flatten_layer #(
             
             OUTPUT_CHUNK: begin
                 // Check if we've output all pixels in current chunk
-                if (output_read_enable && pixel_index >= CHUNK_SIZE - 1) begin
+                if (pixel_index >= CHUNK_SIZE - 1) begin
                     if (current_chunk_addr >= TOTAL_CHUNKS - 1) begin
                         // All chunks processed
                         next_state = COMPLETE;

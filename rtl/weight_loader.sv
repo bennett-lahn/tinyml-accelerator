@@ -101,10 +101,10 @@ module weight_loader #(
     end
     
     // Function to calculate cumulative layer base offsets at compile time
-    function automatic logic [ROM_ADDR_BITS-1:0] calculate_layer_offset(int layer_idx);
+    function automatic logic [ROM_ADDR_BITS-1:0] calculate_layer_offset(int cur_layer_idx);
         logic [ROM_ADDR_BITS-1:0] offset;
         offset = 0;
-        for (int i = 0; i < layer_idx; i++) begin
+        for (int i = 0; i < cur_layer_idx; i++) begin
             offset = offset + ROM_ADDR_BITS'(CONV_OUT_C[i] * CONV_IN_C[i]);
         end
         return offset;
