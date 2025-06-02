@@ -4,7 +4,7 @@ module tensor_ram #(
     // Width for wide reads (bits)
     parameter int READ_WIDTH = 128,
     // Depth in number of READ_WIDTH‐bit words
-    parameter int DEPTH_WORDS = 1024,
+    parameter int DEPTH_WORDS = 128,
     // Width for narrow writes (bits)
     parameter int WRITE_WIDTH = 8,
     // Initialization file for simulation (hex values per READ_WIDTH word)

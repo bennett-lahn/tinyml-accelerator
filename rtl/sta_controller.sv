@@ -5,12 +5,19 @@ module sta_controller #(
   ,parameter int N_BITS = $clog2(MAX_N)
   ,parameter int MAX_NUM_CH  = 64                   // Max number of channels in a layer
   ,parameter int CH_BITS     = $clog2(MAX_NUM_CH+1) // Bits to hold channel number
+  ,parameter int MAX_BYPASS_IDX = 64                // Max index value for bypass mode (fully connected layers)
+  ,parameter int BYPASS_IDX_BITS = $clog2(MAX_BYPASS_IDX) // Bits to hold bypass index
 )(
   input  logic clk
   ,input  logic reset
   ,input  logic reset_sta  // Separate reset for everything except output buffer
   ,input  logic stall
   ,input  logic bypass_maxpool
+  
+  // Bypass inputs - used when bypass_maxpool is asserted
+  ,input  logic   bypass_valid                      // Valid signal for bypass value
+  ,input  int32_t bypass_value                      // Single int32 value to process when bypassing
+  ,input  logic [BYPASS_IDX_BITS-1:0] bypass_index // Index for bypass value (for fully connected layers)
 
   // Inputs for Output Coorditor (to start/define a block computation)
   ,input  logic [N_BITS-1:0]   controller_pos_row            // Base row for the output block
@@ -43,6 +50,7 @@ module sta_controller #(
   ,output logic [7:0]                   array_val_out                 // 8-bit value out (changed from 128-bit)
   ,output logic [$clog2(MAX_N)-1:0]   array_row_out                 // Row for corresponding value
   ,output logic [$clog2(MAX_N)-1:0]   array_col_out                 // Column for corresponding value
+  ,output logic [BYPASS_IDX_BITS-1:0] array_index_out               // Index for corresponding value (bypass mode)
 );
 
   // Internal dimensions for the 4x4 Systolic Array
@@ -160,6 +168,54 @@ module sta_controller #(
   logic [$clog2(MAX_N)-1:0] maxpool_row_out;
   logic [$clog2(MAX_N)-1:0] maxpool_col_out;
 
+  // Bypass mode signals for requantize controller
+  logic                     bypass_requant_valid_flat [SA_N*SA_N];
+  int32_t                   bypass_requant_val_flat   [SA_N*SA_N]; 
+  logic [CTRL_N_BITS-1:0]   bypass_requant_row_flat   [SA_N*SA_N];
+  logic [CTRL_N_BITS-1:0]   bypass_requant_col_flat   [SA_N*SA_N];
+  
+  // Muxed inputs to requantize controller
+  logic                     requant_in_valid_flat [SA_N*SA_N];
+  int32_t                   requant_in_val_flat   [SA_N*SA_N];
+  logic [CTRL_N_BITS-1:0]   requant_in_row_flat   [SA_N*SA_N];
+  logic [CTRL_N_BITS-1:0]   requant_in_col_flat   [SA_N*SA_N];
+
+  // Generate bypass signals - only first element is valid when bypassing
+  always_comb begin
+    for (int i = 0; i < SA_N*SA_N; i++) begin
+      if (i == 0) begin
+        // First element gets the bypass data
+        bypass_requant_valid_flat[i] = bypass_valid;
+        bypass_requant_val_flat[i]   = bypass_value;
+        bypass_requant_row_flat[i]   = bypass_index;
+        bypass_requant_col_flat[i]   = '0;
+      end else begin
+        // All other elements are invalid
+        bypass_requant_valid_flat[i] = 1'b0;
+        bypass_requant_val_flat[i]   = 32'd0;
+        bypass_requant_row_flat[i]   = '0;
+        bypass_requant_col_flat[i]   = '0;
+      end
+    end
+  end
+
+  // Mux between normal STA flow and bypass mode
+  always_comb begin
+    for (int i = 0; i < SA_N*SA_N; i++) begin
+      if (bypass_maxpool) begin
+        requant_in_valid_flat[i] = bypass_requant_valid_flat[i];
+        requant_in_val_flat[i]   = bypass_requant_val_flat[i];
+        requant_in_row_flat[i]   = bypass_requant_row_flat[i];
+        requant_in_col_flat[i]   = bypass_requant_col_flat[i];
+      end else begin
+        requant_in_valid_flat[i] = oc_out_valid_flat_internal[i];
+        requant_in_val_flat[i]   = requant_array_val[i];
+        requant_in_row_flat[i]   = oc_out_row_flat_internal[i];
+        requant_in_col_flat[i]   = oc_out_col_flat_internal[i];
+      end
+    end
+  end
+
   // Reads input from STA as they become valid and requantizes them, 1 value per column of STA at a time
   // Supports SA_N simultaneous reads from each STA column per cycle, but only one requant operation per cycle 
   requantize_controller #(
@@ -169,10 +225,10 @@ module sta_controller #(
     .clk(clk)
     ,.reset(reset|reset_sta)
     ,.layer_idx(layer_idx)
-    ,.in_valid(oc_out_valid_flat_internal)
-    ,.in_output(requant_array_val)
-    ,.in_row(oc_out_row_flat_internal)
-    ,.in_col(oc_out_col_flat_internal)
+    ,.in_valid(requant_in_valid_flat)
+    ,.in_output(requant_in_val_flat)
+    ,.in_row(requant_in_row_flat)
+    ,.in_col(requant_in_col_flat)
     ,.idle(requant_idle)
     ,.out_valid(requant_out_valid)
     ,.out_row(requant_row_out)
@@ -201,11 +257,11 @@ module sta_controller #(
   );
 
   // Streaming output logic - output values as they become available
-  // Priority: maxpool output (when not bypassed), then requantization output (when bypassed)
   logic                       array_out_valid_reg;
   logic [7:0]                  array_val_out_reg;
   logic [$clog2(MAX_N)-1:0]   array_row_out_reg;
   logic [$clog2(MAX_N)-1:0]   array_col_out_reg;
+  logic [BYPASS_IDX_BITS-1:0] array_index_out_reg;
 
   always_ff @(posedge clk) begin
     if (reset) begin
@@ -213,28 +269,29 @@ module sta_controller #(
       array_val_out_reg <= 8'd0;
       array_row_out_reg <= '0;
       array_col_out_reg <= '0;
+      array_index_out_reg <= '0;
     end else begin
+      // Bypass mode: Output requantized values directly (skipping maxpool)
       if (bypass_maxpool) begin
-        // TODO: Bypass maxpool will currently LOSE DATA as there is no buffer method out of requant if pooling bypassed.
-        // Direct mode: Output requantized values as they become available
         // Find the first valid requantized output this cycle
         array_out_valid_reg <= 1'b0;
-        for (int i = 0; i < SA_N; i++) begin
+        for (int i = SA_N-1; i >= 0; i--) begin
           if (requant_out_valid[i]) begin
             array_out_valid_reg <= 1'b1;
             array_val_out_reg <= requant_val_out[i];
-            array_row_out_reg <= requant_row_out[i];
-            array_col_out_reg <= requant_col_out[i];
-            break; // Take the first valid output
+            array_row_out_reg <= '0;  // Not used in bypass mode
+            array_col_out_reg <= '0;  // Not used in bypass mode  
+            array_index_out_reg <= requant_row_out[i][BYPASS_IDX_BITS-1:0]; // Use row output as index
           end
         end
       end else begin
-        // Max pool mode: Output max pooled values as they become available
+        // Normal mode: Output max pooled values as they become available
         if (maxpool_out_valid) begin
           array_out_valid_reg <= 1'b1;
           array_val_out_reg <= maxpool_val_out;
           array_row_out_reg <= maxpool_row_out;
           array_col_out_reg <= maxpool_col_out;
+          array_index_out_reg <= '0;  // Not used in normal mode
         end else begin
           array_out_valid_reg <= 1'b0;
         end
@@ -247,6 +304,7 @@ module sta_controller #(
   assign array_val_out = array_val_out_reg;
   assign array_row_out = array_row_out_reg;
   assign array_col_out = array_col_out_reg;
+  assign array_index_out = array_index_out_reg;
 
   // TODO: Ensure there is not a cycle gap where everything is idle because oc has finished sending requant data but
   // requant has not switched to not idle yet
