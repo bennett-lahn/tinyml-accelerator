@@ -75,9 +75,9 @@ module weight_loader #(
     // Main FSM counters and control signals
     logic [CH_BITS-1:0] current_input_channel_group;   // Current group of 4 input channels being loaded
     logic [CH_BITS-1:0] max_channel_groups;            // Total number of channel groups needed
-    logic [$clog2(KERNEL_SIZE)-1:0] buffer_row; // For loading buffer
+    logic [$clog2(KERNEL_SIZE)-1:0] buffer_row_write_idx; // For loading buffer (write index)
+    logic [$clog2(KERNEL_SIZE)-1:0] buffer_row_addr_idx;  // For ROM addressing (read index)
     logic all_columns_done;
-    logic buffer_loading_active;                        // True when we're actively loading buffer
     
     // Column-specific counters and control
     logic [1:0] col_delay_count [0:3];       // Delay counter for each column before starting
@@ -177,7 +177,7 @@ module weight_loader #(
         // within_layer_offset = (output_filter_idx * 4_rows * input_channel_groups) + (input_channel_group * 4_rows) + row_position
         within_layer_offset = (output_channel_idx * 4 * current_layer_input_channel_groups) +
                              (current_input_channel_group * 4) +
-                             ($clog2(ROM_DEPTH))'(buffer_row);
+                             ($clog2(ROM_DEPTH))'(buffer_row_addr_idx);
         
         // Final ROM address = layer base offset + within layer offset
         weight_rom_addr = layer_base_offset + within_layer_offset;
@@ -209,7 +209,8 @@ module weight_loader #(
     always_ff @(posedge clk) begin
         if (reset) begin
             current_input_channel_group <= 'd0;
-            buffer_row <= 'd0;
+            buffer_row_write_idx <= 'd0;
+            buffer_row_addr_idx <= 'd0;
         end else if (!stall) begin
             case (main_current_state)
                 MAIN_IDLE: begin
@@ -217,25 +218,37 @@ module weight_loader #(
                         current_input_channel_group <= 'd0;
                         // Don't reset buffer_row here - only reset when transitioning to next channel
                     end
+                    if (main_next_state == MAIN_RUNNING) begin
+                        buffer_row_addr_idx <= 'd1;
+                    end
                 end
                 
                 MAIN_RUNNING: begin
-                    // Advance to next channel group when transitioning
-                    // Special case for first layer with only 1 input channel
+                    // Manage buffer_row_addr_idx (for ROM address)
+                    if (weight_rom_read_enable) begin // Increment when a read is initiated
+                        if (buffer_row_addr_idx == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
+                           // Keep at max if already there and still reading (should not happen with corrected enable)
+                           buffer_row_addr_idx <= 'd0; // Reset to 0 so next ROM read is ready when transitioning to next channel group
+                        end else begin
+                           buffer_row_addr_idx <= buffer_row_addr_idx + 'd1;
+                        end
+                    end else if (transitioning_to_next_channel_group) begin // Reset for next channel group
+                        buffer_row_addr_idx <= 'd1;
+                    end
+
+                    // Manage buffer_row_write_idx (for buffer write)
+                    // Special case for first layer with only 1 input channel - write index fixed
                     if (current_layer_idx == 0) begin
-                        buffer_row <= ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1);
+                        buffer_row_write_idx <= ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1);
                     end else begin
                         if (transitioning_to_next_channel_group) begin
-                            current_input_channel_group <= current_input_channel_group + 1'd1;
-                            buffer_row <= 'd0;  // Reset buffer_row only for next channel group
-                        end else if (rom_data_valid) begin
-                        // Increment buffer_row when ROM is being read (loading weights)
-                            if (buffer_row == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
-                                // All 4 rows loaded for current channel group, keep at max
-                                // Don't reset here - only reset when transitioning to next channel
-                                buffer_row <= buffer_row; // Stay at max value
+                            current_input_channel_group <= current_input_channel_group + 'd1;
+                            buffer_row_write_idx <= 'd0;  // Reset write index for next channel group
+                        end else if (rom_data_valid) begin // Increment when ROM data is valid for writing
+                            if (buffer_row_write_idx == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
+                                buffer_row_write_idx <= buffer_row_write_idx; // Stay at max value
                             end else begin
-                                buffer_row <= buffer_row + 1'd1;
+                                buffer_row_write_idx <= buffer_row_write_idx + 'd1;
                             end
                         end
                     end
@@ -371,55 +384,43 @@ module weight_loader #(
                 
                 // Column 0 data for all 4 input channels (position 0, 4, 8, 12)
 
-                weight_buffer[buffer_row*4 + 0][0] <= weight_rom_data3[31:24]; // Input channel 0, col 0
-                weight_buffer[buffer_row*4 + 0][1] <= weight_rom_data3[23:16]; // Input channel 1, col 0
-                weight_buffer[buffer_row*4 + 0][2] <= weight_rom_data3[15:8];  // Input channel 2, col 0
-                weight_buffer[buffer_row*4 + 0][3] <= weight_rom_data3[7:0];   // Input channel 3, col 0
+                weight_buffer[buffer_row_write_idx*4 + 0][0] <= weight_rom_data3[31:24]; // Input channel 0, col 0
+                weight_buffer[buffer_row_write_idx*4 + 0][1] <= weight_rom_data3[23:16]; // Input channel 1, col 0
+                weight_buffer[buffer_row_write_idx*4 + 0][2] <= weight_rom_data3[15:8];  // Input channel 2, col 0
+                weight_buffer[buffer_row_write_idx*4 + 0][3] <= weight_rom_data3[7:0];   // Input channel 3, col 0
                 
                 // Column 1 data for all 4 input channels (position 1, 5, 9, 13)
-                weight_buffer[buffer_row*4 + 1][0] <= weight_rom_data2[31:24]; // Input channel 0, col 1
-                weight_buffer[buffer_row*4 + 1][1] <= weight_rom_data2[23:16]; // Input channel 1, col 1
-                weight_buffer[buffer_row*4 + 1][2] <= weight_rom_data2[15:8];  // Input channel 2, col 1
-                weight_buffer[buffer_row*4 + 1][3] <= weight_rom_data2[7:0];   // Input channel 3, col 1
+                weight_buffer[buffer_row_write_idx*4 + 1][0] <= weight_rom_data2[31:24]; // Input channel 0, col 1
+                weight_buffer[buffer_row_write_idx*4 + 1][1] <= weight_rom_data2[23:16]; // Input channel 1, col 1
+                weight_buffer[buffer_row_write_idx*4 + 1][2] <= weight_rom_data2[15:8];  // Input channel 2, col 1
+                weight_buffer[buffer_row_write_idx*4 + 1][3] <= weight_rom_data2[7:0];   // Input channel 3, col 1
                 
                 // Column 2 data for all 4 input channels (position 2, 6, 10, 14)
-                weight_buffer[buffer_row*4 + 2][0] <= weight_rom_data1[31:24]; // Input channel 0, col 2
-                weight_buffer[buffer_row*4 + 2][1] <= weight_rom_data1[23:16]; // Input channel 1, col 2
-                weight_buffer[buffer_row*4 + 2][2] <= weight_rom_data1[15:8];  // Input channel 2, col 2
-                weight_buffer[buffer_row*4 + 2][3] <= weight_rom_data1[7:0];   // Input channel 3, col 2
+                weight_buffer[buffer_row_write_idx*4 + 2][0] <= weight_rom_data1[31:24]; // Input channel 0, col 2
+                weight_buffer[buffer_row_write_idx*4 + 2][1] <= weight_rom_data1[23:16]; // Input channel 1, col 2
+                weight_buffer[buffer_row_write_idx*4 + 2][2] <= weight_rom_data1[15:8];  // Input channel 2, col 2
+                weight_buffer[buffer_row_write_idx*4 + 2][3] <= weight_rom_data1[7:0];   // Input channel 3, col 2
                 
                 // Column 3 data for all 4 input channels (position 3, 7, 11, 15)
-                weight_buffer[buffer_row*4 + 3][0] <= weight_rom_data0[31:24]; // Input channel 0, col 3
-                weight_buffer[buffer_row*4 + 3][1] <= weight_rom_data0[23:16]; // Input channel 1, col 3
-                weight_buffer[buffer_row*4 + 3][2] <= weight_rom_data0[15:8];  // Input channel 2, col 3
-                weight_buffer[buffer_row*4 + 3][3] <= weight_rom_data0[7:0];   // Input channel 3, col 3
-            end
-        end
-    end
+                weight_buffer[buffer_row_write_idx*4 + 3][0] <= weight_rom_data0[31:24]; // Input channel 0, col 3
+                weight_buffer[buffer_row_write_idx*4 + 3][1] <= weight_rom_data0[23:16]; // Input channel 1, col 3clear
 
-    always_ff @(posedge clk) begin
-        $display("=== Weight Buffer Contents ===");
-        for (int row = 0; row < 4; row++) begin
-            for (int col = 0; col < 4; col++) begin
-                int pos = row * 4 + col;
-                $display("Pos[%0d] (r%0d,c%0d): Ch[0]=%0d Ch[1]=%0d Ch[2]=%0d Ch[3]=%0d",
-                    pos, row, col,
-                    $signed(weight_buffer[pos][0]),
-                    $signed(weight_buffer[pos][1]),
-                    $signed(weight_buffer[pos][2]),
-                    $signed(weight_buffer[pos][3]));
+                weight_buffer[buffer_row_write_idx*4 + 3][2] <= weight_rom_data0[15:8];  // Input channel 2, col 3
+                weight_buffer[buffer_row_write_idx*4 + 3][3] <= weight_rom_data0[7:0];   // Input channel 3, col 3
             end
         end
-        $display("===========================");
     end
     
     // Check if buffer is fully loaded (all rows loaded for current channel group)
     logic buffer_fully_loaded;
-    assign buffer_fully_loaded = (buffer_row == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE-1));
+    // Buffer is considered fully loaded for passthrough purposes when the address for the last row has been generated
+    // For simplicity and to ensure passthrough stops correctly:
+    // consider it loaded once the address for the *last* item has been generated.
+    assign buffer_fully_loaded = (buffer_row_addr_idx == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE-1)); 
     
     // Passthrough control - simplified, only for column 0 when buffer not ready
     logic use_passthrough_col0;
-    assign use_passthrough_col0 = (col_state[0] == COL_WEIGHT_PHASE) && !buffer_fully_loaded;
+    assign use_passthrough_col0 = rom_data_valid && buffer_row_write_idx == 'd0;
     
     // Column active signals
     always_comb begin
@@ -660,7 +661,7 @@ module weight_loader #(
         end else begin
             weight_rom_read_enable = ((main_next_state == MAIN_RUNNING && main_current_state == MAIN_IDLE) ||
                                      (main_current_state == MAIN_RUNNING)) && 
-                                   (buffer_row < ($clog2(KERNEL_SIZE))'(KERNEL_SIZE-1));
+                                     (buffer_row_write_idx < ($clog2(KERNEL_SIZE))'(KERNEL_SIZE-1));
         end
         
         idle = (main_current_state == MAIN_IDLE || main_current_state == MAIN_DONE);

@@ -6,7 +6,7 @@
 
 module bias_rom #(
     parameter WIDTH = 32             // Number of CNN layers
-    ,parameter DEPTH = 256    
+    ,parameter DEPTH = 240    
     ,parameter INIT_FILE = "../fakemodel/tflite_conv_biases.hex" // Optional initialization file
 )(
     input  logic clk                                   // Clock for synchronous read

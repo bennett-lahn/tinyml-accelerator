@@ -1,24 +1,10 @@
 // Parameterizable synchronous ROM for CNN layer weights
 // Stores weights for multiple layers with configurable kernel sizes and channel counts
 // Returns 16 weights at a time to support STA capacity
-
-
-//collum major order
-/*
-    for output_layer in outputs:
-        for input_layer in inputs:
-            load collums of weights = rom[output_layer][input_layer]
-            
-*/
-
-
-
-
-
 module weight_rom #(
-    parameter WIDTH = 128,
-    parameter DEPTH = 16384,
-    parameter INIT_FILE = "" // New parameter for initialization file
+    parameter WIDTH = 128, // Correct, final width and depth
+    parameter DEPTH = 2696,
+    parameter INIT_FILE = "../fakemodel/conv_weights.hex"
 )
 (
     input logic clk,
