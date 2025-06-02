@@ -23,6 +23,8 @@ module fc_bias_rom #(
         if (INIT_FILE != "") begin // Only initialize if a file is specified
             $display("fc_bias_rom: Initializing ROM from file: %s", INIT_FILE);
             $readmemh(INIT_FILE, rom);
+            // Debug: print first few values to verify loading
+            $display("fc_bias_rom: First 4 values: %h %h %h %h", rom[0], rom[1], rom[2], rom[3]);
         end else begin
             // Default initialization if no file is provided, e.g., all zeros
             for (int i = 0; i < DEPTH; i++) begin
@@ -40,15 +42,13 @@ module fc_bias_rom #(
             actual_addr = addr;
         end else begin
             // FC2 layer: addresses FC1_SIZE to FC1_SIZE+FC2_SIZE-1
-            actual_addr = FC1_SIZE + addr;
+            actual_addr = ($clog2(DEPTH))'(FC1_SIZE) + addr;
         end
     end
 
     always_ff @(posedge clk) begin
         if (read_enable) begin
             bias_out <= rom[actual_addr];
-        end else begin
-            bias_out <= 0;
         end
     end
    

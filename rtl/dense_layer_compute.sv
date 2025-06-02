@@ -27,10 +27,11 @@ module dense_layer_compute (
     output logic bias_rom_re,
     input logic [31:0] bias_rom_dout,
     
-    // Output (before activation)
-    output logic [31:0] output_vector [63:0],
-    output logic computation_complete,
-    output logic output_valid,
+    // Single output (one result at a time)
+    output logic [31:0] output_data,
+    output logic [$clog2(64)-1:0] output_channel,  // Which output channel this result is for
+    output logic output_ready,                     // Indicates output_data is valid for current channel
+    output logic computation_complete,             // All outputs computed
     
     // Status outputs
     output logic [$clog2(256+1)-1:0] current_input_size,
@@ -45,42 +46,26 @@ module dense_layer_compute (
     typedef enum logic [2:0] {
         IDLE = 3'b000,
         LOAD_BIAS = 3'b001,
-        COMPUTE_MAC = 3'b010,
-        COMPLETE = 3'b011
+        LOAD_DATA = 3'b010,
+        COMPUTE_MAC = 3'b011,
+        OUTPUT_READY = 3'b100,
+        COMPLETE = 3'b101
     } dense_state_t;
     
     dense_state_t current_state, next_state;
     
     // Computation counters
-    logic [7:0] input_idx;   // Current input index
-    logic [5:0] output_idx;  // Current output index
-    logic [5:0] bias_idx;    // For loading bias values
-    logic computation_done;  // Flag to indicate computation is complete
-    logic final_computation; // Flag to indicate we're on the final computation
-    logic [1:0] completion_delay; // Delay counter for final computation
-    logic final_input_processed; // Flag to indicate final input was processed
+    logic [$clog2(256)-1:0] input_idx;   // Current input index within current output
+    logic [$clog2(64)-1:0] output_idx;   // Current output index
+    logic computation_done;              // Flag to indicate computation is complete
     
-    // Track which output the MAC result belongs to (to handle timing delays)
-    logic [5:0] mac_result_output_idx;
-    
-    // Delay counter to wait for final MAC result
-    logic [2:0] final_mac_delay;
-    
-    // Pipeline to track which output each MAC result belongs to
-    logic [5:0] mac_output_pipeline [1:0];  // 2-stage pipeline for 2-cycle MAC delay
-    
-    // Accumulation registers for each output neuron
-    logic [31:0] output_accumulator [63:0];
-    
-    // TPE interface signals
-    logic mac_enable;
+    // MAC interface signals
     logic mac_load_bias;
-    logic [7:0] mac_input_data;
-    logic [7:0] mac_weight_data;
-    logic [31:0] mac_bias_in;
-    logic [31:0] mac_partial_sum_in;
-    logic [31:0] mac_partial_sum_out;
-    logic mac_output_valid;
+    logic mac_enable;
+    int32_t mac_bias_in;
+    int8_t mac_left_in;
+    int8_t mac_top_in;
+    int32_t mac_sum_out;
     
     // MAC control signals
     logic mac_reset;
@@ -91,12 +76,10 @@ module dense_layer_compute (
         .reset(mac_reset),
         .enable(mac_enable),
         .load_bias(mac_load_bias),
-        .input_data(mac_input_data),
-        .weight_data(mac_weight_data),
         .bias_in(mac_bias_in),
-        .partial_sum_in(mac_partial_sum_in),
-        .partial_sum_out(mac_partial_sum_out),
-        .output_valid(mac_output_valid)
+        .left_in(mac_left_in),
+        .top_in(mac_top_in),
+        .sum_out(mac_sum_out)
     );
     
     // Memory address generation
@@ -104,31 +87,37 @@ module dense_layer_compute (
         // Tensor RAM address (input vector)
         tensor_ram_addr = input_idx;
         
-        // Weight ROM address (row-major: input_idx * output_size + output_idx)
-        weight_rom_addr = (input_idx * output_size[5:0]) + {{8{1'b0}}, output_idx};
+        // Weight ROM address (row-major addressing: output_idx * input_size + input_idx)
+        weight_rom_addr = output_idx * input_size[$clog2(256)-1:0] + input_idx;
         
         // Bias ROM address
-        bias_rom_addr = bias_idx;
+        bias_rom_addr = output_idx;
     end
     
     // Memory read enable signals
     always_comb begin
-        tensor_ram_re = (current_state == COMPUTE_MAC) && (input_idx < input_size[7:0]) && (output_idx < output_size[5:0]);
-        weight_rom_re = (current_state == COMPUTE_MAC) && (input_idx < input_size[7:0]) && (output_idx < output_size[5:0]);
-        bias_rom_re = (current_state == LOAD_BIAS) && (bias_idx < output_size[5:0]);
+        // Start tensor/weight reads in LOAD_DATA to ensure data is valid in COMPUTE_MAC
+        tensor_ram_re = (current_state == LOAD_DATA);
+        weight_rom_re = (current_state == LOAD_DATA);
+        // Read bias ROM during LOAD_BIAS state (output_idx is now properly updated)
+        bias_rom_re = (current_state == LOAD_BIAS);
     end
     
-    // MAC control signals
+    // MAC input assignments
     always_comb begin
-        mac_enable = (current_state == COMPUTE_MAC) && (input_idx < input_size[7:0]) && (output_idx < output_size[5:0]);
-        mac_load_bias = (current_state == COMPUTE_MAC) && (input_idx == 0); // Load bias at start of each output neuron
-        mac_input_data = tensor_ram_dout;
-        mac_weight_data = weight_rom_dout;
-        mac_bias_in = output_accumulator[output_idx]; // Bias value loaded during LOAD_BIAS state
-        mac_partial_sum_in = mac_partial_sum_out; // Use MAC's own accumulator for chaining
-        
-        // Reset MAC unit when transitioning between outputs or at global reset
-        mac_reset = reset || (final_input_processed && (output_idx < output_size[5:0] - 1));
+        mac_left_in = int8_t'(tensor_ram_dout);
+        mac_top_in = int8_t'(weight_rom_dout);
+        mac_bias_in = int32_t'(bias_rom_dout);
+        // mac_load_bias assigned in next state logic for proper timing
+        // Reset MAC in multiple scenarios for robust operation:
+        // 1. System reset
+        // 2. When idle (no computation active)  
+        // 3. When transitioning from OUTPUT_READY to LOAD_BIAS (between outputs)
+        // 4. When starting new computation from IDLE
+        mac_reset = reset || 
+                   (current_state == IDLE) || 
+                   ((current_state == OUTPUT_READY) && (next_state == LOAD_BIAS)) ||
+                   ((current_state == IDLE) && (next_state == LOAD_BIAS));
     end
     
     // Main state machine
@@ -137,21 +126,7 @@ module dense_layer_compute (
             current_state <= IDLE;
             input_idx <= 0;
             output_idx <= 0;
-            bias_idx <= 0;
             computation_done <= 0;
-            final_computation <= 0;
-            completion_delay <= 0;
-            final_input_processed <= 0;
-            final_mac_delay <= 0;
-            
-            // Initialize pipeline
-            mac_output_pipeline[0] <= 0;
-            mac_output_pipeline[1] <= 0;
-            
-            // Initialize accumulators
-            for (int i = 0; i < 64; i++) begin
-                output_accumulator[i] <= 0;
-            end
         end else begin
             current_state <= next_state;
             
@@ -160,73 +135,60 @@ module dense_layer_compute (
                     if (start_compute && input_valid) begin
                         input_idx <= 0;
                         output_idx <= 0;
-                        bias_idx <= 0;
                         computation_done <= 0;
-                        final_computation <= 0;
-                        completion_delay <= 0;
-                        final_input_processed <= 0;
-                        final_mac_delay <= 0;
-                        
-                        // Initialize pipeline
-                        mac_output_pipeline[0] <= 0;
-                        mac_output_pipeline[1] <= 0;
-                        
-                        // Clear accumulators
-                        for (int i = 0; i < 64; i++) begin
-                            output_accumulator[i] <= 0;
-                        end
                     end
                 end
                 
                 LOAD_BIAS: begin
-                    // Load bias values into accumulators (with one cycle delay for memory read)
-                    if (bias_idx > 0 && bias_idx <= output_size[5:0]) begin
-                        output_accumulator[bias_idx - 1] <= bias_rom_dout;
-                    end
-                    
-                    // Increment bias index
-                    if (bias_idx <= output_size[5:0]) begin
-                        bias_idx <= bias_idx + 1;
-                    end
-                    
-                    // Reset computation indices when bias loading is done
-                    if (bias_idx > output_size[5:0]) begin
+                    // Bias is loaded into MAC on this cycle
+                    // No additional logic needed here as MAC handles the loading
+                    // Ensure clean state for output computation
+                    if (input_idx != 0) begin
                         input_idx <= 0;
-                        output_idx <= 0;
                     end
                 end
                 
+                LOAD_DATA: begin
+                    // Transition to COMPUTE_MAC
+                    // Memory reads have been initiated, data will be valid next cycle
+                end
+                
                 COMPUTE_MAC: begin
-                    if (mac_output_valid) begin
-                        // Store MAC results as they become available
-                        output_accumulator[output_idx] <= mac_partial_sum_out;
-                        
-                        // Check if this is the final computation for current output
-                        if (input_idx == input_size[7:0] - 1) begin
-                            // This is the final input for current output
-                            final_input_processed <= 1;
-                        end else begin
-                            // Move to next input
-                            input_idx <= input_idx + 1;
-                        end
-                    end
+                    // MAC operation happens with stable addresses
+                    // Index incrementing moved to next state logic for proper timing
                     
-                    // Handle completion after final result is stored
-                    if (final_input_processed) begin
-                        if (output_idx == output_size[5:0] - 1) begin
-                            // Finished all outputs - set completion flag
+                    // Check if this was the last input for current output
+                    if (input_idx == input_size[$clog2(256)-1:0] - 1) begin
+                        // Finished processing all inputs for current output
+                        // Reset input index for next output and handle output completion
+                        input_idx <= 0;
+                        
+                        if (output_idx == output_size[$clog2(64)-1:0] - 1) begin
+                            // All outputs computed
                             computation_done <= 1;
-                        end else begin
-                            // Move to next output (MAC will be reset automatically)
-                            input_idx <= 0;
-                            output_idx <= output_idx + 1;
                         end
-                        final_input_processed <= 0;
+                    end else begin
+                        // Increment input index when moving to next input
+                        input_idx <= input_idx + 1;
+                    end
+                end
+                
+                OUTPUT_READY: begin
+                    // Output is ready for downstream module to consume
+                    // Stay in this state for one cycle to allow downstream to capture
+                    // Increment output_idx here AFTER output is captured
+                    if (output_idx < output_size[$clog2(64)-1:0] - 1) begin
+                        output_idx <= output_idx + 1;
+                        // Reset input_idx for next output computation
+                        input_idx <= 0;
                     end
                 end
                 
                 COMPLETE: begin
-                    // Computation complete, outputs ready
+                    // Computation complete
+                    if (!start_compute) begin
+                        computation_done <= 0;
+                    end
                 end
                 
                 default: begin
@@ -239,6 +201,8 @@ module dense_layer_compute (
     // Next state logic
     always_comb begin
         next_state = current_state;
+        mac_load_bias = 0; // Default value
+        mac_enable = 0;    // Default value - only enable during COMPUTE_MAC
         
         case (current_state)
             IDLE: begin
@@ -248,23 +212,48 @@ module dense_layer_compute (
             end
             
             LOAD_BIAS: begin
-                if (bias_idx > output_size[5:0]) begin
-                    next_state = COMPUTE_MAC;
+                // Transition to LOAD_DATA (bias ROM read happens during this state)
+                next_state = LOAD_DATA;
+            end
+            
+            LOAD_DATA: begin
+                // Transition to COMPUTE_MAC
+                next_state = COMPUTE_MAC;
+                // Load bias into MAC when transitioning to COMPUTE_MAC for first input only
+                if (input_idx == 0) begin
+                    mac_load_bias = 1;
                 end
             end
             
             COMPUTE_MAC: begin
-                // Check if all computations are done using the completion flag
-                if (computation_done) begin
+                // Enable MAC accumulation only during this state
+                mac_enable = 1;
+                
+                if (input_idx == input_size[$clog2(256)-1:0] - 1) begin
+                    // Finished all inputs for current output
+                    next_state = OUTPUT_READY;
+                end else begin
+                    // More inputs to process, go back to LOAD_DATA for next input
+                    next_state = LOAD_DATA;
+                end
+            end
+            
+            OUTPUT_READY: begin
+                if (output_idx == output_size[$clog2(64)-1:0] - 1) begin
+                    // This was the last output
                     next_state = COMPLETE;
+                end else begin
+                    // More outputs to process, load bias for next output
+                    next_state = LOAD_BIAS;
                 end
             end
             
             COMPLETE: begin
-                if (start_compute) begin
-                    next_state = LOAD_BIAS;
-                end else begin
+                if (!start_compute) begin
                     next_state = IDLE;
+                end else begin
+                    // Start new computation
+                    next_state = LOAD_BIAS;
                 end
             end
             
@@ -275,8 +264,9 @@ module dense_layer_compute (
     end
     
     // Output assignments
-    assign output_vector = output_accumulator;
+    assign output_data = mac_sum_out;
+    assign output_channel = output_idx;
+    assign output_ready = (current_state == OUTPUT_READY);
     assign computation_complete = (current_state == COMPLETE);
-    assign output_valid = computation_complete;
 
 endmodule 

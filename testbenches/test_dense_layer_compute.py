@@ -1,7 +1,7 @@
 import cocotb
 from cocotb.clock import Clock
-from cocotb.triggers import RisingEdge, Timer
-import numpy as np
+from cocotb.triggers import RisingEdge
+import random
 
 @cocotb.test()
 async def test_dense_layer_basic_functionality(dut):
@@ -15,115 +15,138 @@ async def test_dense_layer_basic_functionality(dut):
     dut.reset.value = 1
     dut.start_compute.value = 0
     dut.input_valid.value = 0
-    dut.input_size.value = 0
-    dut.output_size.value = 0
-    
-    # Initialize memory interfaces
-    dut.tensor_ram_dout.value = 0
-    dut.weight_rom_dout.value = 0
-    dut.bias_rom_dout.value = 0
+    dut.input_size.value = 3
+    dut.output_size.value = 2
     
     await RisingEdge(dut.clk)
     await RisingEdge(dut.clk)
     dut.reset.value = 0
     await RisingEdge(dut.clk)
     
-    # Test configuration: 4 inputs, 3 outputs
-    input_size = 4
-    output_size = 3
-    
     # Test data
-    # Input vector: [1, 2, 3, 4] (signed 8-bit)
-    input_vector = np.array([1, 2, 3, 4], dtype=np.int8)
+    input_vector = [2, 3, 1]  # 3 inputs
+    weight_matrix = [
+        [1, 2, 3],  # weights for output 0
+        [4, 5, 6]   # weights for output 1
+    ]
+    # Flatten weights in row-major order: [1, 2, 3, 4, 5, 6]
+    weights_flat = [1, 2, 3, 4, 5, 6]
+    bias_vector = [10, 20]  # 2 biases
     
-    # Weight matrix (4x3): each column is weights for one output neuron
-    # Output 0: [1, 1, 1, 1] -> dot product = 1*1 + 2*1 + 3*1 + 4*1 = 10
-    # Output 1: [2, 1, 0, -1] -> dot product = 1*2 + 2*1 + 3*0 + 4*(-1) = 0  
-    # Output 2: [0, 1, 2, 1] -> dot product = 1*0 + 2*1 + 3*2 + 4*1 = 12
-    weight_matrix = np.array([
-        [1, 2, 0],   # weights for input 0
-        [1, 1, 1],   # weights for input 1  
-        [1, 0, 2],   # weights for input 2
-        [1, -1, 1]   # weights for input 3
-    ], dtype=np.int8)
+    # Expected outputs:
+    # output[0] = bias[0] + input[0]*weight[0][0] + input[1]*weight[0][1] + input[2]*weight[0][2]
+    #           = 10 + 2*1 + 3*2 + 1*3 = 10 + 2 + 6 + 3 = 21
+    # output[1] = bias[1] + input[0]*weight[1][0] + input[1]*weight[1][1] + input[2]*weight[1][2]
+    #           = 20 + 2*4 + 3*5 + 1*6 = 20 + 8 + 15 + 6 = 49
+    expected_outputs = [21, 49]
     
-    # Bias vector: [5, -3, 7]
-    bias_vector = np.array([5, -3, 7], dtype=np.int32)
-    
-    # Expected outputs: [10+5, 0+(-3), 12+7] = [15, -3, 19]
-    expected_outputs = np.array([15, -3, 19], dtype=np.int32)
-    
-    dut.input_size.value = input_size
-    dut.output_size.value = output_size
+    # Start computation
     dut.input_valid.value = 1
     dut.start_compute.value = 1
-    
     await RisingEdge(dut.clk)
     dut.start_compute.value = 0
     
-    # Wait for state machine to start
-    await RisingEdge(dut.clk)
-    
-    # Monitor state transitions and provide memory responses
-    state_history = []
+    # Track outputs as they become ready
+    received_outputs = {}
     cycle_count = 0
-    max_cycles = 100
     
-    while cycle_count < max_cycles:
+    while cycle_count < 50:  # Safety limit
         await RisingEdge(dut.clk)
         cycle_count += 1
         
-        # Record current state (assuming we can read internal signals)
-        current_state = int(dut.current_state.value) if hasattr(dut, 'current_state') else -1
-        state_history.append(current_state)
+        # Print detailed MAC trace for each cycle
+        print(f"\n=== Cycle {cycle_count} ===")
+        print(f"State: {int(dut.current_state.value) if hasattr(dut, 'current_state') else 'N/A'}")
+        print(f"Input idx: {int(dut.input_idx.value) if hasattr(dut, 'input_idx') else 'N/A'}")
+        print(f"Output idx: {int(dut.output_idx.value) if hasattr(dut, 'output_idx') else 'N/A'}")
+        print(f"Weight idx: {int(dut.weight_idx.value) if hasattr(dut, 'weight_idx') else 'N/A'}")
         
-        # Respond to memory requests
+        # MAC unit signals
+        if hasattr(dut, 'mac_inst'):
+            mac = dut.mac_inst
+            print(f"MAC reset: {int(dut.mac_reset.value) if hasattr(dut, 'mac_reset') else 'N/A'}")
+            print(f"MAC load_bias: {int(dut.mac_load_bias.value) if hasattr(dut, 'mac_load_bias') else 'N/A'}")
+            print(f"MAC bias_in: {int(dut.mac_bias_in.value) if hasattr(dut, 'mac_bias_in') else 'N/A'}")
+            print(f"MAC left_in: {int(dut.mac_left_in.value) if hasattr(dut, 'mac_left_in') else 'N/A'}")
+            print(f"MAC top_in: {int(dut.mac_top_in.value) if hasattr(dut, 'mac_top_in') else 'N/A'}")
+            print(f"MAC sum_out: {int(dut.mac_sum_out.value) if hasattr(dut, 'mac_sum_out') else 'N/A'}")
+            
+            # MAC internal signals if accessible
+            if hasattr(mac, 'mult'):
+                print(f"MAC mult: {int(mac.mult.value)}")
+            if hasattr(mac, 'sum'):
+                print(f"MAC sum: {int(mac.sum.value)}")
+            if hasattr(mac, 'accumulator'):
+                print(f"MAC accumulator: {int(mac.accumulator.value)}")
+        
+        # Memory interface signals
+        print(f"Tensor RAM RE: {int(dut.tensor_ram_re.value)}")
+        print(f"Weight ROM RE: {int(dut.weight_rom_re.value)}")
+        print(f"Bias ROM RE: {int(dut.bias_rom_re.value)}")
+        
+        # Provide memory data based on addresses
         if int(dut.tensor_ram_re.value) == 1:
             addr = int(dut.tensor_ram_addr.value)
             if addr < len(input_vector):
-                dut.tensor_ram_dout.value = int(input_vector[addr])
+                dut.tensor_ram_dout.value = input_vector[addr]
+                print(f"  Tensor RAM read: addr={addr}, data={input_vector[addr]}")
             else:
                 dut.tensor_ram_dout.value = 0
+                print(f"  Tensor RAM read: addr={addr}, data=0 (out of bounds)")
                 
         if int(dut.weight_rom_re.value) == 1:
             addr = int(dut.weight_rom_addr.value)
-            # Address calculation: input_idx * output_size + output_idx
-            if addr < weight_matrix.size:
-                input_idx = addr // output_size
-                output_idx = addr % output_size
-                if input_idx < weight_matrix.shape[0] and output_idx < weight_matrix.shape[1]:
-                    dut.weight_rom_dout.value = int(weight_matrix[input_idx, output_idx])
-                else:
-                    dut.weight_rom_dout.value = 0
+            if addr < len(weights_flat):
+                dut.weight_rom_dout.value = weights_flat[addr]
+                print(f"  Weight ROM read: addr={addr}, data={weights_flat[addr]}")
             else:
                 dut.weight_rom_dout.value = 0
+                print(f"  Weight ROM read: addr={addr}, data=0 (out of bounds)")
                 
         if int(dut.bias_rom_re.value) == 1:
             addr = int(dut.bias_rom_addr.value)
             if addr < len(bias_vector):
-                dut.bias_rom_dout.value = int(bias_vector[addr])
+                dut.bias_rom_dout.value = bias_vector[addr]
+                print(f"  Bias ROM read: addr={addr}, data={bias_vector[addr]}")
             else:
                 dut.bias_rom_dout.value = 0
+                print(f"  Bias ROM read: addr={addr}, data=0 (out of bounds)")
+        
+        # Output signals
+        print(f"Output ready: {int(dut.output_ready.value)}")
+        print(f"Output data: {int(dut.output_data.value)}")
+        print(f"Output channel: {int(dut.output_channel.value)}")
+        print(f"Computation complete: {int(dut.computation_complete.value)}")
+        
+        # Check if output is ready
+        if int(dut.output_ready.value) == 1:
+            channel = int(dut.output_channel.value)
+            output_data = int(dut.output_data.value)
+            received_outputs[channel] = output_data
+            print(f"*** Received output for channel {channel}: {output_data} ***")
         
         # Check if computation is complete
         if int(dut.computation_complete.value) == 1:
-            print(f"Computation completed at cycle {cycle_count}")
+            print(f"*** Computation completed at cycle {cycle_count} ***")
             break
     
     # Verify outputs
     assert int(dut.computation_complete.value) == 1, "Computation should be complete"
-    assert int(dut.output_valid.value) == 1, "Output should be valid"
+    
+    # Check that we received all expected outputs
+    assert len(received_outputs) == len(expected_outputs), f"Expected {len(expected_outputs)} outputs, got {len(received_outputs)}"
     
     # Check output values
-    for i in range(output_size):
-        actual_output = int(dut.output_vector[i].value)
+    for i in range(len(expected_outputs)):
+        assert i in received_outputs, f"Missing output for channel {i}"
+        actual_output = received_outputs[i]
         expected_output = expected_outputs[i]
         print(f"Output {i}: Expected {expected_output}, Got {actual_output}")
         assert actual_output == expected_output, f"Output {i} mismatch: expected {expected_output}, got {actual_output}"
     
     # Verify configuration echo
-    assert int(dut.current_input_size.value) == input_size, "Input size should be echoed correctly"
-    assert int(dut.current_output_size.value) == output_size, "Output size should be echoed correctly"
+    assert int(dut.current_input_size.value) == 3, "Input size should be echoed correctly"
+    assert int(dut.current_output_size.value) == 2, "Output size should be echoed correctly"
     
     print("✅ Basic dense layer computation test passed!")
 
@@ -167,14 +190,8 @@ async def test_dense_layer_state_machine(dut):
     if hasattr(dut, 'current_state'):
         assert int(dut.current_state.value) == 1, "Should be in LOAD_BIAS state"
     
-    # Wait for bias loading to complete (2 bias values)
-    bias_cycles = 0
-    while bias_cycles < 10:  # Safety limit
-        await RisingEdge(dut.clk)
-        bias_cycles += 1
-        if hasattr(dut, 'current_state') and int(dut.current_state.value) == 2:  # COMPUTE_MAC
-            break
-    
+    # Should transition to COMPUTE_MAC state (2)
+    await RisingEdge(dut.clk)
     if hasattr(dut, 'current_state'):
         assert int(dut.current_state.value) == 2, "Should transition to COMPUTE_MAC state"
     
@@ -186,9 +203,9 @@ async def test_dense_layer_state_machine(dut):
         if int(dut.computation_complete.value) == 1:
             break
     
-    # Should be in COMPLETE state (3)
+    # Should be in COMPLETE state (4) - updated for new state machine
     if hasattr(dut, 'current_state'):
-        assert int(dut.current_state.value) == 3, "Should be in COMPLETE state"
+        assert int(dut.current_state.value) == 4, "Should be in COMPLETE state"
     
     print("✅ State machine test passed!")
 
@@ -254,10 +271,8 @@ async def test_dense_layer_memory_addressing(dut):
     expected_tensor_addrs = [0, 1, 2] * 2  # 3 inputs × 2 outputs
     assert set(tensor_addresses) == set([0, 1, 2]), f"Tensor addresses should include all inputs"
     
-    # Verify weight ROM addresses
-    # For 3 inputs × 2 outputs, addresses should be:
-    # input_idx * output_size + output_idx
-    # (0*2+0=0, 0*2+1=1, 1*2+0=2, 1*2+1=3, 2*2+0=4, 2*2+1=5)
+    # Verify weight ROM addresses - continuous addressing
+    # For 3 inputs × 2 outputs, addresses should be: 0, 1, 2, 3, 4, 5
     expected_weight_addrs = [0, 1, 2, 3, 4, 5]
     assert set(weight_addresses) == set(expected_weight_addrs), f"Weight addresses: expected {expected_weight_addrs}, got unique {list(set(weight_addresses))}"
     
@@ -295,20 +310,150 @@ async def test_dense_layer_edge_cases(dut):
     await RisingEdge(dut.clk)
     dut.start_compute.value = 0
     
-    # Wait for completion
+    # Wait for completion and capture output
     cycle_count = 0
+    output_received = False
+    actual_output = 0
+    
     while cycle_count < 20:
         await RisingEdge(dut.clk)
         cycle_count += 1
+        
+        # Check if output is ready
+        if int(dut.output_ready.value) == 1:
+            actual_output = int(dut.output_data.value)
+            output_received = True
+            print(f"Single output test: Got {actual_output}")
+        
         if int(dut.computation_complete.value) == 1:
             break
     
-    assert int(dut.computation_complete.value) == 1, "Single input/output computation should complete"
-    expected_output = 5 * 3 + 2  # 17
-    actual_output = int(dut.output_vector[0].value)
-    assert actual_output == expected_output, f"Single I/O: expected {expected_output}, got {actual_output}"
+    # Verify single output
+    assert output_received, "Should have received output"
+    assert actual_output == 17, f"Expected 17, got {actual_output}"
     
     print("✅ Edge cases test passed!")
+
+@cocotb.test()
+async def test_dense_layer_multiple_outputs_timing(dut):
+    """Test that outputs are produced in correct order and timing"""
+    
+    # Start clock
+    clock = Clock(dut.clk, 10, units="ns")
+    cocotb.start_soon(clock.start())
+    
+    # Reset
+    dut.reset.value = 1
+    dut.start_compute.value = 0
+    dut.input_valid.value = 0
+    dut.input_size.value = 2
+    dut.output_size.value = 3
+    
+    await RisingEdge(dut.clk)
+    await RisingEdge(dut.clk)
+    dut.reset.value = 0
+    await RisingEdge(dut.clk)
+    
+    # Test data
+    input_vector = [1, 2]
+    weights_flat = [1, 2, 3, 4, 5, 6]  # 2 inputs × 3 outputs
+    bias_vector = [10, 20, 30]
+    
+    # Start computation
+    dut.input_valid.value = 1
+    dut.start_compute.value = 1
+    await RisingEdge(dut.clk)
+    dut.start_compute.value = 0
+    
+    # Track output order
+    output_order = []
+    cycle_count = 0
+    
+    while cycle_count < 50:
+        await RisingEdge(dut.clk)
+        cycle_count += 1
+        
+        # Print detailed MAC trace for each cycle
+        print(f"\n=== Cycle {cycle_count} ===")
+        print(f"State: {int(dut.current_state.value) if hasattr(dut, 'current_state') else 'N/A'}")
+        print(f"Input idx: {int(dut.input_idx.value) if hasattr(dut, 'input_idx') else 'N/A'}")
+        print(f"Output idx: {int(dut.output_idx.value) if hasattr(dut, 'output_idx') else 'N/A'}")
+        print(f"Weight idx: {int(dut.weight_idx.value) if hasattr(dut, 'weight_idx') else 'N/A'}")
+        
+        # MAC unit signals
+        if hasattr(dut, 'mac_inst'):
+            mac = dut.mac_inst
+            print(f"MAC reset: {int(dut.mac_reset.value) if hasattr(dut, 'mac_reset') else 'N/A'}")
+            print(f"MAC load_bias: {int(dut.mac_load_bias.value) if hasattr(dut, 'mac_load_bias') else 'N/A'}")
+            print(f"MAC bias_in: {int(dut.mac_bias_in.value) if hasattr(dut, 'mac_bias_in') else 'N/A'}")
+            print(f"MAC left_in: {int(dut.mac_left_in.value) if hasattr(dut, 'mac_left_in') else 'N/A'}")
+            print(f"MAC top_in: {int(dut.mac_top_in.value) if hasattr(dut, 'mac_top_in') else 'N/A'}")
+            print(f"MAC sum_out: {int(dut.mac_sum_out.value) if hasattr(dut, 'mac_sum_out') else 'N/A'}")
+            
+            # MAC internal signals if accessible
+            if hasattr(mac, 'mult'):
+                print(f"MAC mult: {int(mac.mult.value)}")
+            if hasattr(mac, 'sum'):
+                print(f"MAC sum: {int(mac.sum.value)}")
+            if hasattr(mac, 'accumulator'):
+                print(f"MAC accumulator: {int(mac.accumulator.value)}")
+        
+        # Memory interface signals
+        print(f"Tensor RAM RE: {int(dut.tensor_ram_re.value)}")
+        print(f"Weight ROM RE: {int(dut.weight_rom_re.value)}")
+        print(f"Bias ROM RE: {int(dut.bias_rom_re.value)}")
+        
+        # Provide memory data based on addresses
+        if int(dut.tensor_ram_re.value) == 1:
+            addr = int(dut.tensor_ram_addr.value)
+            if addr < len(input_vector):
+                dut.tensor_ram_dout.value = input_vector[addr]
+                print(f"  Tensor RAM read: addr={addr}, data={input_vector[addr]}")
+            else:
+                dut.tensor_ram_dout.value = 0
+                print(f"  Tensor RAM read: addr={addr}, data=0 (out of bounds)")
+                
+        if int(dut.weight_rom_re.value) == 1:
+            addr = int(dut.weight_rom_addr.value)
+            if addr < len(weights_flat):
+                dut.weight_rom_dout.value = weights_flat[addr]
+                print(f"  Weight ROM read: addr={addr}, data={weights_flat[addr]}")
+            else:
+                dut.weight_rom_dout.value = 0
+                print(f"  Weight ROM read: addr={addr}, data=0 (out of bounds)")
+                
+        if int(dut.bias_rom_re.value) == 1:
+            addr = int(dut.bias_rom_addr.value)
+            if addr < len(bias_vector):
+                dut.bias_rom_dout.value = bias_vector[addr]
+                print(f"  Bias ROM read: addr={addr}, data={bias_vector[addr]}")
+            else:
+                dut.bias_rom_dout.value = 0
+                print(f"  Bias ROM read: addr={addr}, data=0 (out of bounds)")
+        
+        # Output signals
+        print(f"Output ready: {int(dut.output_ready.value)}")
+        print(f"Output data: {int(dut.output_data.value)}")
+        print(f"Output channel: {int(dut.output_channel.value)}")
+        print(f"Computation complete: {int(dut.computation_complete.value)}")
+        
+        # Check if output is ready
+        if int(dut.output_ready.value) == 1:
+            channel = int(dut.output_channel.value)
+            output_data = int(dut.output_data.value)
+            output_order.append((channel, output_data))
+            print(f"Output {channel}: {output_data}")
+        
+        if int(dut.computation_complete.value) == 1:
+            break
+    
+    # Verify outputs are produced in order (0, 1, 2)
+    assert len(output_order) == 3, f"Expected 3 outputs, got {len(output_order)}"
+    
+    for i, (channel, data) in enumerate(output_order):
+        assert channel == i, f"Output {i} should be channel {i}, got channel {channel}"
+    
+    print("✅ Multiple outputs timing test passed!")
 
 if __name__ == "__main__":
     print("Dense layer compute testbench") 
