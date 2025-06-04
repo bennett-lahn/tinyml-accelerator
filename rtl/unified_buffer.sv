@@ -1,28 +1,19 @@
 module unified_buffer #(
     parameter MAX_IMG_W = 64,
     parameter MAX_IMG_H = 64,
-    parameter BUFFER_SIZE = 7,
-    parameter PATCH_SIZE = 4,
-    parameter PATCHES_PER_BLOCK = 4,
     parameter MAX_CHANNELS = 64,
-    parameter MAX_PADDING = 3  // Maximum padding size (e.g., for 7x7 kernels)
+    parameter MAX_PADDING = 3
 )(
     input logic clk,
     input logic reset,
     
+    // Layer configuration - determines extraction strategy
+    input logic [2:0] layer_idx,  // 0=input, 1=conv1, 2=conv2, 3=conv3, 4=conv4
+    
     // Control signals
     input logic start_extraction,
-    input logic next_channel_group,  // Request next 4 channels for same spatial block
-    input logic next_spatial_block,  // Request next spatial block after all channels done
-    
-    // Configuration  
-    input logic [$clog2(MAX_IMG_W+1)-1:0] img_width,
-    input logic [$clog2(MAX_IMG_H+1)-1:0] img_height,
-    input logic [$clog2(MAX_CHANNELS+1)-1:0] num_channels,
-    input logic [$clog2(MAX_PADDING+1)-1:0] pad_top,     // Top padding
-    input logic [$clog2(MAX_PADDING+1)-1:0] pad_bottom,  // Bottom padding  
-    input logic [$clog2(MAX_PADDING+1)-1:0] pad_left,    // Left padding
-    input logic [$clog2(MAX_PADDING+1)-1:0] pad_right,   // Right padding
+    input logic next_channel_group,
+    input logic next_spatial_block,
     
     // Memory interface
     output logic ram_re,
@@ -32,113 +23,204 @@ module unified_buffer #(
     // Status outputs
     output logic block_ready,
     output logic extraction_complete,
-    output logic all_channels_done,  // All channel groups for current spatial block processed
-    output logic buffer_loading_complete, // Buffer is fully loaded with valid data
+    output logic all_channels_done,
+    output logic buffer_loading_complete,
     
-    // Address calculation outputs (without padding offset)
-    output logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr,  // Block start column in image coordinates
-    output logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr,  // Block start row in image coordinates
-    output logic block_coords_valid,  // Indicates if the address coordinates are valid (not in padding)
+    // Address calculation outputs
+    output logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr,
+    output logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr,
+    output logic block_coords_valid,
     
-    // Data outputs: All 7x7 positions for spatial streaming (not just 4x4 patches)
-    output logic [31:0] patch_pe00_out, patch_pe01_out, patch_pe02_out, patch_pe03_out, patch_pe04_out, patch_pe05_out, patch_pe06_out,
-    output logic [31:0] patch_pe10_out, patch_pe11_out, patch_pe12_out, patch_pe13_out, patch_pe14_out, patch_pe15_out, patch_pe16_out,
-    output logic [31:0] patch_pe20_out, patch_pe21_out, patch_pe22_out, patch_pe23_out, patch_pe24_out, patch_pe25_out, patch_pe26_out,
-    output logic [31:0] patch_pe30_out, patch_pe31_out, patch_pe32_out, patch_pe33_out, patch_pe34_out, patch_pe35_out, patch_pe36_out,
-    output logic [31:0] patch_pe40_out, patch_pe41_out, patch_pe42_out, patch_pe43_out, patch_pe44_out, patch_pe45_out, patch_pe46_out,
-    output logic [31:0] patch_pe50_out, patch_pe51_out, patch_pe52_out, patch_pe53_out, patch_pe54_out, patch_pe55_out, patch_pe56_out,
-    output logic [31:0] patch_pe60_out, patch_pe61_out, patch_pe62_out, patch_pe63_out, patch_pe64_out, patch_pe65_out, patch_pe66_out,
+    // Data outputs - variable patch sizes based on layer
+    output logic [31:0] patch_data_out [6:0][6:0],  // Maximum 7x7 buffer
     output logic patches_valid
 );
+
+    // Layer-specific configuration
+    logic [$clog2(MAX_IMG_W+1)-1:0] layer_img_width;
+    logic [$clog2(MAX_IMG_H+1)-1:0] layer_img_height;
+    logic [$clog2(MAX_CHANNELS+1)-1:0] layer_num_channels;
+    logic [2:0] layer_patch_size;     // Size of patch to extract (4x4, 7x7, etc.)
+    logic [2:0] layer_stride;         // Stride for spatial advancement
+    logic layer_use_full_image;       // For small images, extract entire image
+    // Add padding configuration using model's default asymmetric padding
+    logic [2:0] layer_pad_top, layer_pad_bottom, layer_pad_left, layer_pad_right;
+    logic [$clog2(MAX_IMG_W + 3 + 1)-1:0] padded_img_width;
+    logic [$clog2(MAX_IMG_H + 3 + 1)-1:0] padded_img_height;
+
+    // Hard-coded layer configurations based on TPU_target_model.py
+    always_comb begin
+        case (layer_idx)
+            3'd0: begin // Input layer: 32x32x1
+                layer_img_width = 32;
+                layer_img_height = 32;
+                layer_num_channels = 1;
+                layer_patch_size = 7;
+                layer_stride = 4;
+                layer_use_full_image = 0;
+                layer_pad_top = 0; layer_pad_bottom = 0; layer_pad_left = 0; layer_pad_right = 0;
+            end
+            3'd1: begin // After conv1+pool1: 16x16x8
+                layer_img_width = 16;
+                layer_img_height = 16;
+                layer_num_channels = 8;
+                layer_patch_size = 7;
+                layer_stride = 4;
+                layer_use_full_image = 0;
+                layer_pad_top = 0; layer_pad_bottom = 0; layer_pad_left = 0; layer_pad_right = 0;
+            end
+            3'd2: begin // After conv2+pool2: 8x8x16 -> Pad to enable 7x7 chunks
+                layer_img_width = 8;
+                layer_img_height = 8;
+                layer_num_channels = 16;
+                layer_patch_size = 7;  // Use 7x7 chunks with padding
+                layer_stride = 4;      // Keep stride=4, gives chunks at padded coordinates
+                layer_use_full_image = 0;
+                // Use model's default asymmetric padding: 8x8 -> 11x11
+                layer_pad_top = 1; layer_pad_bottom = 2; 
+                layer_pad_left = 1; layer_pad_right = 2;
+            end
+            3'd3: begin // After conv3+pool3: 4x4x32 -> Pad to enable 7x7 chunks  
+                layer_img_width = 4;
+                layer_img_height = 4;
+                layer_num_channels = 32;
+                layer_patch_size = 7;  // Use 7x7 chunks with padding
+                layer_stride = 1;      // Single extraction from padded coordinate (0,0)
+                layer_use_full_image = 1;  // Extract one 7x7 chunk from padded 4x4
+                // Use model's default asymmetric padding: 4x4 -> 7x7 (perfect fit!)
+                layer_pad_top = 1; layer_pad_bottom = 2;
+                layer_pad_left = 1; layer_pad_right = 2;
+            end
+            // Removed layer_idx=4 (2x2x64) as it's not needed
+            default: begin // Default to input layer
+                layer_img_width = 32;
+                layer_img_height = 32;
+                layer_num_channels = 1;
+                layer_patch_size = 7;
+                layer_stride = 4;
+                layer_use_full_image = 0;
+                layer_pad_top = 0; layer_pad_bottom = 0; layer_pad_left = 0; layer_pad_right = 0;
+            end
+        endcase
+        
+        // Calculate padded dimensions
+        /* verilator lint_off WIDTHEXPAND */
+        /* verilator lint_off WIDTHTRUNC */
+        padded_img_width = ($clog2(MAX_IMG_W + 3 + 1)+1)'(layer_img_width + layer_pad_left + layer_pad_right);
+        padded_img_height = ($clog2(MAX_IMG_H + 3 + 1)+1)'(layer_img_height + layer_pad_top + layer_pad_bottom);
+        /* verilator lint_on WIDTHTRUNC */
+        /* verilator lint_on WIDTHEXPAND */
+    end
+
+    // Calculate total channel groups needed (always 4 channels per group)
+    logic [$clog2(MAX_CHANNELS/4)-1:0] total_channel_groups;
+    /* verilator lint_off WIDTHEXPAND */
+    assign total_channel_groups = ($clog2(MAX_CHANNELS/4))'((layer_num_channels + 3) / 4);
+    /* verilator lint_on WIDTHEXPAND */
+    
+    // Calculate spatial positions per RAM read based on channel count
+    logic [$clog2(17)-1:0] spatial_positions_per_read;
+    always_comb begin
+        case (layer_num_channels)
+            1:  spatial_positions_per_read = 16;  // 16 spatial positions, 1 channel each
+            2:  spatial_positions_per_read = 8;   // 8 spatial positions, 2 channels each  
+            4:  spatial_positions_per_read = 4;   // 4 spatial positions, 4 channels each
+            8:  spatial_positions_per_read = 2;   // 2 spatial positions, 8 channels each
+            16: spatial_positions_per_read = 1;   // 1 spatial position, 16 channels
+            32: spatial_positions_per_read = 1;   // 1 spatial position, 16 channels (need 2 reads)
+            64: spatial_positions_per_read = 1;   // 1 spatial position, 16 channels (need 4 reads)
+            default: spatial_positions_per_read = 1;
+        endcase
+    end
 
     // State machine
     typedef enum logic [2:0] {
         IDLE,
         LOADING_BLOCK,
         BLOCK_READY,
-        WAIT_NEXT_CHANNEL,
-        WAIT_NEXT_SPATIAL
+        WAIT_NEXT_SPATIAL,
+        COMPLETE
     } state_t;
     state_t state;
 
-    // Current spatial block position (top-left corner of 7x7 block in padded coordinate space)
-    // Note: These can be negative due to padding
-    logic signed [$clog2(MAX_IMG_W + 2*MAX_PADDING)-1:0] block_start_col;
-    logic signed [$clog2(MAX_IMG_H + 2*MAX_PADDING)-1:0] block_start_row;
+    // Current spatial block position (in padded coordinate space)
+    logic signed [$clog2(MAX_IMG_W + 3)-1:0] block_start_col;
+    logic signed [$clog2(MAX_IMG_H + 3)-1:0] block_start_row;
     
-    // Current channel group (which set of 4 channels: 0, 1, 2, ...)
+    // Current channel group tracking
     logic [$clog2(MAX_CHANNELS/4)-1:0] channel_group;
-    logic [$clog2(MAX_CHANNELS/4)-1:0] total_channel_groups;
     
-    // Buffer to store current 7x7x4 block
-    logic [31:0] buffer_7x7 [6:0][6:0]; // 7x7 spatial positions, 4 channels each
+    // Buffer to store current patch
+    logic [31:0] buffer_patch [6:0][6:0];
+    
+    // RAM data cache
+    logic [127:0] ram_data_cache;
+    logic ram_data_valid;
     
     // Loading counters
-    logic [$clog2(BUFFER_SIZE)-1:0] load_row, load_col;
-    logic loading_cycle_complete;
-    logic all_data_loaded;
+    logic [$clog2(64)-1:0] ram_read_count;
+    logic [$clog2(64)-1:0] total_ram_reads;
+    logic [$clog2(7)-1:0] extract_row, extract_col;
     
-    // Padded image dimensions - properly sized to handle padding additions
-    logic [$clog2(MAX_IMG_W + 2*MAX_PADDING + 1)-1:0] padded_width;
-    logic [$clog2(MAX_IMG_H + 2*MAX_PADDING + 1)-1:0] padded_height;
+    // Calculate total RAM reads needed based on layer-specific patch size
+    logic [$clog2(64)-1:0] total_positions;
+    always_comb begin
+        total_positions = ($clog2(64))'(layer_patch_size * layer_patch_size);
+        // For layers with many channels (32, 64), we need multiple reads per spatial position
+        /* verilator lint_off WIDTHEXPAND */
+        if (layer_num_channels > 16) begin
+            total_ram_reads = ($clog2(64))'(total_positions * ((layer_num_channels + 15) / 16));  // Round up
+        end else begin
+            total_ram_reads = ($clog2(64))'((total_positions + spatial_positions_per_read - 1) / spatial_positions_per_read);
+        end
+        /* verilator lint_on WIDTHEXPAND */
+    end
     
-    assign padded_width = ($clog2(MAX_IMG_W + 2*MAX_PADDING + 1))'(img_width) + ($clog2(MAX_IMG_W + 2*MAX_PADDING + 1))'(pad_left) + ($clog2(MAX_IMG_W + 2*MAX_PADDING + 1))'(pad_right);
-    assign padded_height = ($clog2(MAX_IMG_H + 2*MAX_PADDING + 1))'(img_height) + ($clog2(MAX_IMG_H + 2*MAX_PADDING + 1))'(pad_top) + ($clog2(MAX_IMG_H + 2*MAX_PADDING + 1))'(pad_bottom);
-    
-    // Calculate total channel groups needed - fix width truncation
-    assign total_channel_groups = ($clog2(MAX_CHANNELS/4))'((32'(num_channels) + 3) / 4); // Ceiling division
-    
-    // State machine for spatial-channel iteration
+    // State machine
     always_ff @(posedge clk) begin
         if (reset) begin
             state <= IDLE;
-            block_start_row <= -($clog2(MAX_IMG_H + 2*MAX_PADDING))'(pad_top);  // Start with negative row (top padding)
-            block_start_col <= -($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left); // Start with negative col (left padding)
+            block_start_row <= 0;
+            block_start_col <= 0;
             channel_group <= 0;
-            load_row <= 0;
-            load_col <= 0;
+            ram_read_count <= 0;
+            ram_data_valid <= 0;
         end else begin
             case (state)
                 IDLE: begin
                     if (start_extraction) begin
-                        block_start_row <= -($clog2(MAX_IMG_H + 2*MAX_PADDING))'(pad_top);  // Start with top padding
-                        block_start_col <= -($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left); // Start with left padding
+                        // Start from top-left of padded space (negative coordinates for top/left padding)
+                        block_start_row <= -($clog2(MAX_IMG_H + 3))'(layer_pad_top);
+                        block_start_col <= -($clog2(MAX_IMG_W + 3))'(layer_pad_left);
                         channel_group <= 0;
-                        load_row <= 0;
-                        load_col <= 0;
+                        ram_read_count <= 0;
+                        ram_data_valid <= 0;
                         state <= LOADING_BLOCK;
                     end
                 end
                 
                 LOADING_BLOCK: begin
-                    if (loading_complete) begin
-                        state <= BLOCK_READY;
-                    end else begin
-                        // Increment loading counters
-                        if (load_col == BUFFER_SIZE - 1) begin
-                            load_col <= 0;
-                            if (load_row == BUFFER_SIZE - 1) begin
-                                load_row <= 0;
-                            end else begin
-                                load_row <= load_row + 1;
-                            end
+                    if (ram_data_valid) begin
+                        if (ram_read_count >= total_ram_reads - 1) begin
+                            state <= BLOCK_READY;
                         end else begin
-                            load_col <= load_col + 1;
+                            ram_read_count <= ram_read_count + 1;
+                            ram_data_valid <= 1'b0;
                         end
                     end
                 end
                 
                 BLOCK_READY: begin
                     if (next_channel_group) begin
-                        if (channel_group == total_channel_groups - 1) begin
-                            // All channels done for this spatial block
+                        if (channel_group >= total_channel_groups - 1) begin
+                            // All channels done for this spatial block 
                             channel_group <= 0;
                             state <= WAIT_NEXT_SPATIAL;
                         end else begin
                             // Move to next channel group for same spatial block
                             channel_group <= channel_group + 1;
-                            load_row <= 0;
-                            load_col <= 0;
+                            ram_read_count <= 0;
+                            ram_data_valid <= 0;
                             state <= LOADING_BLOCK;
                         end
                     end
@@ -146,25 +228,40 @@ module unified_buffer #(
                 
                 WAIT_NEXT_SPATIAL: begin
                     if (next_spatial_block) begin
-                        // Move to next spatial block
-                        if (block_start_col + PATCHES_PER_BLOCK >= padded_width - PATCHES_PER_BLOCK) begin
-                            block_start_col <= -($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left); // Reset to left padding
-                            if (block_start_row + PATCHES_PER_BLOCK >= padded_height - PATCHES_PER_BLOCK) begin
-                                // Extraction complete
-                                state <= IDLE;
+                        // Calculate next spatial position based on stride and current position
+                        if (layer_use_full_image) begin
+                            // For full image extraction, we're done after one extraction
+                            state <= COMPLETE;
+                        end else begin
+                            // Normal stride-based advancement
+                            /* verilator lint_off WIDTHEXPAND */
+                            if (($clog2(MAX_IMG_W + 3 + 1))'(block_start_col + layer_stride + layer_patch_size) > padded_img_width) begin
+                                // Move to next row
+                                block_start_col <= -($clog2(MAX_IMG_W + 3))'(layer_pad_left);
+                                if (($clog2(MAX_IMG_H + 3 + 1))'(block_start_row + layer_stride + layer_patch_size) > padded_img_height) begin
+                                    // Extraction complete
+                                    state <= COMPLETE;
+                                end else begin
+                                    block_start_row <= block_start_row + ($clog2(MAX_IMG_H + 3))'(layer_stride);
+                                    ram_read_count <= 0;
+                                    ram_data_valid <= 0;
+                                    state <= LOADING_BLOCK;
+                                end
                             end else begin
-                                block_start_row <= block_start_row + PATCHES_PER_BLOCK;
-                                load_row <= 0;
-                                load_col <= 0;
+                                // Move to next column
+                                block_start_col <= block_start_col + ($clog2(MAX_IMG_W + 3))'(layer_stride);
+                                ram_read_count <= 0;
+                                ram_data_valid <= 0;
                                 state <= LOADING_BLOCK;
                             end
-                        end else begin
-                            block_start_col <= block_start_col + PATCHES_PER_BLOCK;
-                            load_row <= 0;
-                            load_col <= 0;
-                            state <= LOADING_BLOCK;
+                            /* verilator lint_on WIDTHEXPAND */
                         end
                     end
+                end
+                
+                COMPLETE: begin
+                    // Stay in complete state until reset
+                    state <= COMPLETE;
                 end
                 
                 default: begin
@@ -173,248 +270,268 @@ module unified_buffer #(
             endcase
         end
     end
+
+    // Address calculation variables (moved outside always_comb)
+    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] calculated_addr;
+    logic is_padding_region;
+    logic [$clog2(64)-1:0] linear_position;
+    logic [$clog2(7)-1:0] buf_row, buf_col;
+    logic signed [$clog2(MAX_IMG_W + 3)-1:0] mem_row, mem_col;
+    logic [$clog2(MAX_IMG_W)-1:0] actual_mem_row, actual_mem_col;
+    logic [$clog2(64)-1:0] channel_read_idx;
+    logic signed [$clog2(MAX_IMG_W + 3)-1:0] actual_img_row, actual_img_col;
+    logic [$clog2(64)-1:0] spatial_idx;  // Moved to module level to avoid latch
+
+    // Address calculation
+    always_comb begin
+        calculated_addr = 0;
+        is_padding_region = 1'b0;
+        linear_position = 0;
+        buf_row = 0;
+        buf_col = 0;
+        mem_row = 0;
+        mem_col = 0;
+        actual_mem_row = 0;
+        actual_mem_col = 0;
+        channel_read_idx = 0;
+        actual_img_row = 0;
+        actual_img_col = 0;
+        spatial_idx = 0;  // Always assign to avoid latch
+        
+        if (state == LOADING_BLOCK) begin
+            if (layer_num_channels > 16) begin
+                // High channel count - handle differently (32+ channels need multiple reads)
+                /* verilator lint_off WIDTHEXPAND */
+                spatial_idx = ($clog2(64))'(ram_read_count / ((layer_num_channels + 15) / 16));
+                channel_read_idx = ($clog2(64))'(ram_read_count % ((layer_num_channels + 15) / 16));
+                /* verilator lint_on WIDTHEXPAND */
+                buf_row = ($clog2(7))'(spatial_idx / layer_patch_size);
+                buf_col = ($clog2(7))'(spatial_idx % layer_patch_size);
+                
+                mem_row = block_start_row + ($clog2(MAX_IMG_W + 3))'(buf_row);
+                mem_col = block_start_col + ($clog2(MAX_IMG_W + 3))'(buf_col);
+                
+                // Check if this position is within the actual image (not padding)
+                // Convert from padded coordinates to actual image coordinates
+                actual_img_row = mem_row - ($clog2(MAX_IMG_W + 3))'(layer_pad_top);
+                actual_img_col = mem_col - ($clog2(MAX_IMG_W + 3))'(layer_pad_left);
+                
+                if (actual_img_row >= 0 && actual_img_row < layer_img_height && 
+                    actual_img_col >= 0 && actual_img_col < layer_img_width) begin
+                    actual_mem_row = actual_img_row[$clog2(MAX_IMG_W)-1:0];
+                    actual_mem_col = actual_img_col[$clog2(MAX_IMG_W)-1:0];
+                    /* verilator lint_off WIDTHEXPAND */
+                    calculated_addr = ($clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4))'(
+                        (actual_mem_row * layer_img_width + actual_mem_col) * 
+                        ((layer_num_channels + 15) / 16) + channel_read_idx);
+                    /* verilator lint_on WIDTHEXPAND */
+                    is_padding_region = 1'b0;
+                end else begin
+                    is_padding_region = 1'b1;
+                end
+            end else begin
+                // Normal case - single or few reads per spatial position
+                linear_position = ($clog2(64))'(ram_read_count * spatial_positions_per_read);
+                buf_row = ($clog2(7))'(linear_position / layer_patch_size);
+                buf_col = ($clog2(7))'(linear_position % layer_patch_size);
+                
+                mem_row = block_start_row + ($clog2(MAX_IMG_W + 3))'(buf_row);
+                mem_col = block_start_col + ($clog2(MAX_IMG_W + 3))'(buf_col);
+                
+                // Check if this position is within the actual image (not padding)
+                // Convert from padded coordinates to actual image coordinates
+                actual_img_row = mem_row - ($clog2(MAX_IMG_W + 3))'(layer_pad_top);
+                actual_img_col = mem_col - ($clog2(MAX_IMG_W + 3))'(layer_pad_left);
+                
+                if (actual_img_row >= 0 && actual_img_row < layer_img_height && 
+                    actual_img_col >= 0 && actual_img_col < layer_img_width) begin
+                    actual_mem_row = actual_img_row[$clog2(MAX_IMG_W)-1:0];
+                    actual_mem_col = actual_img_col[$clog2(MAX_IMG_W)-1:0];
+                    calculated_addr = ($clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4))'(
+                        actual_mem_row * layer_img_width + actual_mem_col);
+                    is_padding_region = 1'b0;
+                end else begin
+                    is_padding_region = 1'b1;
+                end
+            end
+        end
+    end
     
-    // Loading completion detection - simplified and more reliable
-    logic loading_complete;
-    logic [$clog2(8)-1:0] completion_delay_counter;
+    // RAM control - don't read from memory for padding regions
+    assign ram_re = (state == LOADING_BLOCK && !ram_data_valid && !is_padding_region);
+    assign ram_addr = calculated_addr;
     
-    assign loading_cycle_complete = (load_row == BUFFER_SIZE - 1) && (load_col == BUFFER_SIZE - 1);
-    
-    // Track that all required data has been loaded (including delayed RAM data)
+    // RAM data caching
     always_ff @(posedge clk) begin
         if (reset) begin
-            all_data_loaded <= 1'b0;
-            completion_delay_counter <= 0;
+            ram_data_cache <= '0;
+            ram_data_valid <= 1'b0;
         end else begin
-            if (state == LOADING_BLOCK && loading_cycle_complete) begin
-                // Start delay counter to wait for RAM data
-                completion_delay_counter <= completion_delay_counter + 1;
-                if (completion_delay_counter >= 2) begin // Wait 2 cycles for RAM data to settle
-                    all_data_loaded <= 1'b1;
-                end
+            if (ram_re) begin
+                // Normal memory read
+                ram_data_cache <= {ram_dout0, ram_dout1, ram_dout2, ram_dout3};
+                ram_data_valid <= 1'b1;
+            end else if (state == LOADING_BLOCK && !ram_data_valid && is_padding_region) begin
+                // Padding region - provide zeros
+                ram_data_cache <= '0;
+                ram_data_valid <= 1'b1;
             end else if (state == IDLE || state == WAIT_NEXT_SPATIAL || 
                         (state == BLOCK_READY && next_channel_group && channel_group < total_channel_groups - 1)) begin
-                // Reset when:
-                // 1. Starting a new block (IDLE)
-                // 2. Waiting for next spatial block
-                // 3. Starting next channel group (transition from BLOCK_READY)
-                all_data_loaded <= 1'b0;
-                completion_delay_counter <= 0;
+                ram_data_valid <= 1'b0;
             end
         end
     end
     
-    assign loading_complete = all_data_loaded;
-    
-    // Memory address calculation with improved padding support and bounds checking
-    logic signed [$clog2(MAX_IMG_W + 2*MAX_PADDING)-1:0] actual_row, actual_col;
-    logic in_padding_region;
-    logic [$clog2(MAX_IMG_W)-1:0] mem_row, mem_col;
-    logic address_valid;
-    
-    // Temporary variables for coordinate conversion (declared outside always_comb to prevent latches)
-    logic signed [$clog2(MAX_IMG_W + 2*MAX_PADDING)-1:0] temp_row, temp_col;
-    
-    // Calculate actual coordinates in padded space
-    assign actual_row = block_start_row + ($clog2(MAX_IMG_H + 2*MAX_PADDING))'(load_row);
-    assign actual_col = block_start_col + ($clog2(MAX_IMG_W + 2*MAX_PADDING))'(load_col);
-    
-    // Check if we're in padding region (outside actual image bounds)
-    assign in_padding_region = (actual_row < ($clog2(MAX_IMG_H + 2*MAX_PADDING))'(pad_top)) ||
-                              (actual_row >= ($clog2(MAX_IMG_H + 2*MAX_PADDING))'(pad_top + img_height)) ||
-                              (actual_col < ($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left)) ||
-                              (actual_col >= ($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left + img_width));
-    
-    // Convert to memory coordinates (relative to actual image, not padded) with bounds checking
-    always_comb begin
-        // Default values to prevent latches
-        mem_row = '0;
-        mem_col = '0;
-        address_valid = 1'b0;
-        temp_row = '0;
-        temp_col = '0;
+    // Data extraction and buffer management - Extract 4 consecutive channels
+    function automatic [31:0] extract_channel_data(
+        input [127:0] cached_data
+        ,input [$clog2(17)-1:0] spatial_pos_index
+        ,input [$clog2(MAX_CHANNELS/4)-1:0] ch_group
+        ,input [$clog2(17)-1:0] positions_per_read
+        ,input [$clog2(MAX_CHANNELS+1)-1:0] num_ch
+    );
+        logic [31:0] result;
+        logic [6:0] base_channel;  // Increased width to handle MAX_CHANNELS/4 * 4
+        logic [7:0] ch0, ch1, ch2, ch3;  // 4 channels to extract
         
-        if (!in_padding_region) begin
-            // Safe conversion with bounds checking
-            temp_row = actual_row - ($clog2(MAX_IMG_H + 2*MAX_PADDING))'(pad_top);
-            temp_col = actual_col - ($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left);
+        result = 32'h00000000;
+        base_channel = 7'(ch_group * 4);  // Channel group 0->chs 0-3, group 1->chs 4-7, etc.
+        
+        // Extract 4 consecutive channels based on memory layout
+        case (positions_per_read)
+            16: begin // 1 channel per spatial position (16 spatial positions in 128-bit read)
+                // For 1 channel layers, only channel 0 exists, others are padded with zero
+                if (base_channel == 0 && num_ch >= 1) begin
+                    ch0 = cached_data[(spatial_pos_index * 8) +: 8];
+                end else ch0 = 8'h00;
+                ch1 = 8'h00;  // Pad with zeros
+                ch2 = 8'h00;
+                ch3 = 8'h00;
+                result = {ch3, ch2, ch1, ch0};
+            end
             
-            // Ensure coordinates are within valid range
-            if (temp_row >= 0 && temp_row < img_height && temp_col >= 0 && temp_col < img_width) begin
-                mem_row = ($clog2(MAX_IMG_W))'(temp_row);
-                mem_col = ($clog2(MAX_IMG_W))'(temp_col);
-                address_valid = 1'b1;
+            8: begin // 2 channels per spatial position (8 spatial positions in 128-bit read)
+                // Extract channels based on group
+                if (base_channel == 0 && num_ch >= 2) begin
+                    ch0 = cached_data[(spatial_pos_index * 16) + 0 +: 8];
+                    ch1 = cached_data[(spatial_pos_index * 16) + 8 +: 8];
+                end else begin
+                    ch0 = 8'h00;
+                    ch1 = 8'h00;
+                end
+                ch2 = 8'h00;  // Pad remaining with zeros
+                ch3 = 8'h00;
+                result = {ch3, ch2, ch1, ch0};
             end
-        end
-    end
-    
-    // Calculate memory address with overflow protection
-    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] calculated_addr;
-    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] max_valid_addr;
-    
-    // Temporary variable for address calculation (declared outside always_comb to prevent latches)
-    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)+8-1:0] temp_addr;
-    
-    always_comb begin
-        // Default values to prevent latches
-        calculated_addr = '0;
-        temp_addr = '0;
-        
-        // Calculate maximum valid address - fix to account for correct addressing
-        // Each address contains data for all channel groups at one spatial position
-        max_valid_addr = ($clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4))'((img_width * img_height) - 1);
-        
-        if (address_valid && !in_padding_region) begin
-            // Fixed address calculation: all channel groups for same position use same address
-            // Address = row * width + col (no multiplication by channel groups)
-            // The channel group determines which 32-bit chunk to extract from 128-bit data
-            temp_addr = ($clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)+8)'(mem_row) * ($clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)+8)'(img_width) + ($clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)+8)'(mem_col);
             
-            if (temp_addr <= ($clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)+8)'(max_valid_addr)) begin
-                calculated_addr = temp_addr[$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0];
+            4: begin // 4 channels per spatial position (4 spatial positions in 128-bit read)
+                // Perfect fit - extract all 4 channels
+                if (base_channel == 0 && num_ch >= 4) begin
+                    ch0 = cached_data[(spatial_pos_index * 32) + 0 +: 8];
+                    ch1 = cached_data[(spatial_pos_index * 32) + 8 +: 8];
+                    ch2 = cached_data[(spatial_pos_index * 32) + 16 +: 8];
+                    ch3 = cached_data[(spatial_pos_index * 32) + 24 +: 8];
+                end else begin
+                    ch0 = 8'h00; ch1 = 8'h00; ch2 = 8'h00; ch3 = 8'h00;
+                end
+                result = {ch3, ch2, ch1, ch0};
+            end
+            
+            2: begin // 8 channels per spatial position (2 spatial positions in 128-bit read)
+                // Extract 4 channels from the 8 available, based on channel group
+                if ((7'(base_channel) + 3) < 7'(num_ch)) begin
+                    ch0 = cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 0 +: 8];
+                    ch1 = cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 8 +: 8];
+                    ch2 = cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 16 +: 8];
+                    ch3 = cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 24 +: 8];
+                end else begin
+                    // Handle partial groups with padding
+                    ch0 = ((7'(base_channel) + 0) < 7'(num_ch)) ? cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 0 +: 8] : 8'h00;
+                    ch1 = ((7'(base_channel) + 1) < 7'(num_ch)) ? cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 8 +: 8] : 8'h00;
+                    ch2 = ((7'(base_channel) + 2) < 7'(num_ch)) ? cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 16 +: 8] : 8'h00;
+                    ch3 = ((7'(base_channel) + 3) < 7'(num_ch)) ? cached_data[(spatial_pos_index * 64) + (base_channel * 8) + 24 +: 8] : 8'h00;
+                end
+                result = {ch3, ch2, ch1, ch0};
+            end
+            
+            1: begin // 16+ channels per spatial position (1 spatial position in 128-bit read)
+                // Extract 4 channels from the 16 available, based on channel group
+                if ((7'(base_channel) + 3) < 7'(num_ch)) begin
+                    ch0 = cached_data[(base_channel * 8) + 0 +: 8];
+                    ch1 = cached_data[(base_channel * 8) + 8 +: 8];
+                    ch2 = cached_data[(base_channel * 8) + 16 +: 8];
+                    ch3 = cached_data[(base_channel * 8) + 24 +: 8];
+                end else begin
+                    // Handle partial groups with padding
+                    ch0 = ((7'(base_channel) + 0) < 7'(num_ch)) ? cached_data[(base_channel * 8) + 0 +: 8] : 8'h00;
+                    ch1 = ((7'(base_channel) + 1) < 7'(num_ch)) ? cached_data[(base_channel * 8) + 8 +: 8] : 8'h00;
+                    ch2 = ((7'(base_channel) + 2) < 7'(num_ch)) ? cached_data[(base_channel * 8) + 16 +: 8] : 8'h00;
+                    ch3 = ((7'(base_channel) + 3) < 7'(num_ch)) ? cached_data[(base_channel * 8) + 24 +: 8] : 8'h00;
+                end
+                result = {ch3, ch2, ch1, ch0};
+            end
+            
+            default: begin
+                result = 32'h00000000;
+            end
+        endcase
+        
+        return result;
+    endfunction
+    
+    // Store extracted data into patch buffer
+    always_ff @(posedge clk) begin
+        if (ram_data_valid && state == LOADING_BLOCK) begin
+            // Extract spatial positions based on layer configuration
+            for (int pos = 0; pos < spatial_positions_per_read; pos++) begin
+                logic [$clog2(7)-1:0] buf_row_local, buf_col_local;
+                logic [$clog2(64)-1:0] abs_pos;
+                logic [$clog2(64)-1:0] spatial_idx_local;
+                
+                if (layer_num_channels > 16) begin
+                    // High channel count - handle differently (32+ channels need multiple reads)
+                    /* verilator lint_off WIDTHEXPAND */
+                    spatial_idx_local = ($clog2(64))'(ram_read_count / ((layer_num_channels + 15) / 16));
+                    /* verilator lint_on WIDTHEXPAND */
+                    buf_row_local = ($clog2(7))'(spatial_idx_local / layer_patch_size);
+                    buf_col_local = ($clog2(7))'(spatial_idx_local % layer_patch_size);
+                    
+                    if (buf_row_local < layer_patch_size && buf_col_local < layer_patch_size) begin
+                        buffer_patch[buf_row_local][buf_col_local] <= extract_channel_data(
+                            ram_data_cache, 0, channel_group, 1, layer_num_channels);
+                    end
+                end else begin
+                    // Normal case - extract for each spatial position in this RAM read
+                    abs_pos = ($clog2(64))'(ram_read_count * spatial_positions_per_read + pos);
+                    buf_row_local = ($clog2(7))'(abs_pos / layer_patch_size);
+                    buf_col_local = ($clog2(7))'(abs_pos % layer_patch_size);
+                    
+                    if (buf_row_local < layer_patch_size && buf_col_local < layer_patch_size) begin
+                        buffer_patch[buf_row_local][buf_col_local] <= extract_channel_data(
+                            ram_data_cache, pos[$clog2(17)-1:0], channel_group, 
+                            spatial_positions_per_read, layer_num_channels);
+                    end
+                end
             end
         end
     end
     
-    assign ram_addr = calculated_addr;
-    assign ram_re = (state == LOADING_BLOCK) && !loading_cycle_complete && address_valid && !in_padding_region;
-    
-    // Address bounds checking
-    always_ff @(posedge clk) begin
-        if (ram_re && calculated_addr > max_valid_addr) begin
-            $display("ERROR: unified_buffer ram address out of bounds at time %0t! calculated_addr=%d, max_valid_addr=%d, mem_row=%d, mem_col=%d, img_width=%d, img_height=%d", 
-                     $time, calculated_addr, max_valid_addr, mem_row, mem_col, img_width, img_height);
-        end
-    end
-    
-    // Store loaded data into 7x7 buffer
-    // Need to delay by one cycle to properly capture RAM data
-    logic ram_re_delayed;
-    logic in_padding_region_delayed;
-    logic [$clog2(BUFFER_SIZE)-1:0] load_row_delayed, load_col_delayed;
-    logic address_valid_delayed;
-    logic [1:0] channel_group_delayed;
-    
-    always_ff @(posedge clk) begin
-        // Delay control signals by one cycle to match RAM data timing
-        ram_re_delayed <= ram_re;
-        in_padding_region_delayed <= in_padding_region;
-        load_row_delayed <= load_row;
-        load_col_delayed <= load_col;
-        address_valid_delayed <= address_valid;
-        channel_group_delayed <= channel_group;
-    end
-    
-    always_ff @(posedge clk) begin
-        if (ram_re_delayed) begin
-            if (in_padding_region_delayed) begin
-                // Zero padding for regions outside image bounds
-                buffer_7x7[load_row_delayed][load_col_delayed] <= 32'h00000000;
-            end else begin
-                // Select the correct 32-bit chunk based on channel group and reverse byte order
-                // The tensor RAM outputs are in little-endian format, so we need to reverse bytes
-                // Channel group 0 (channels 0-3): use ram_dout3 with byte reversal
-                // Channel group 1 (channels 4-7): use ram_dout2 with byte reversal
-                case (channel_group_delayed)
-                    2'd0: buffer_7x7[load_row_delayed][load_col_delayed] <= {ram_dout3[7:0], ram_dout3[15:8], ram_dout3[23:16], ram_dout3[31:24]}; // bytes [0,1,2,3]
-                    2'd1: buffer_7x7[load_row_delayed][load_col_delayed] <= {ram_dout2[7:0], ram_dout2[15:8], ram_dout2[23:16], ram_dout2[31:24]}; // bytes [4,5,6,7]
-                    2'd2: buffer_7x7[load_row_delayed][load_col_delayed] <= {ram_dout1[7:0], ram_dout1[15:8], ram_dout1[23:16], ram_dout1[31:24]}; // bytes [8,9,10,11]
-                    2'd3: buffer_7x7[load_row_delayed][load_col_delayed] <= {ram_dout0[7:0], ram_dout0[15:8], ram_dout0[23:16], ram_dout0[31:24]}; // bytes [12,13,14,15]
-                    default: buffer_7x7[load_row_delayed][load_col_delayed] <= {ram_dout3[7:0], ram_dout3[15:8], ram_dout3[23:16], ram_dout3[31:24]};
-                endcase
-            end
-        end else if (state == LOADING_BLOCK && in_padding_region) begin
-            // Handle immediate padding (for regions that never generate RAM requests)
-            buffer_7x7[load_row][load_col] <= 32'h00000000;
-        end
-    end
-    
-    // Extract 16 overlapping 4x4 patches from the 7x7 buffer
-    // Patch (i,j) starts at buffer position (i,j) and extends 4x4
-    assign patch_pe00_out = buffer_7x7[0][0]; // Patch at (0,0)
-    assign patch_pe01_out = buffer_7x7[0][1]; // Patch at (0,1)  
-    assign patch_pe02_out = buffer_7x7[0][2]; // Patch at (0,2)
-    assign patch_pe03_out = buffer_7x7[0][3]; // Patch at (0,3)
-    
-    assign patch_pe10_out = buffer_7x7[1][0]; // Patch at (1,0)
-    assign patch_pe11_out = buffer_7x7[1][1]; // Patch at (1,1)
-    assign patch_pe12_out = buffer_7x7[1][2]; // Patch at (1,2) 
-    assign patch_pe13_out = buffer_7x7[1][3]; // Patch at (1,3)
-    
-    assign patch_pe20_out = buffer_7x7[2][0]; // Patch at (2,0)
-    assign patch_pe21_out = buffer_7x7[2][1]; // Patch at (2,1)
-    assign patch_pe22_out = buffer_7x7[2][2]; // Patch at (2,2)
-    assign patch_pe23_out = buffer_7x7[2][3]; // Patch at (2,3)
-    
-    assign patch_pe30_out = buffer_7x7[3][0]; // Patch at (3,0)
-    assign patch_pe31_out = buffer_7x7[3][1]; // Patch at (3,1)
-    assign patch_pe32_out = buffer_7x7[3][2]; // Patch at (3,2)
-    assign patch_pe33_out = buffer_7x7[3][3]; // Patch at (3,3)
-    
-    assign patch_pe40_out = buffer_7x7[4][0]; // Patch at (4,0)
-    assign patch_pe41_out = buffer_7x7[4][1]; // Patch at (4,1)
-    assign patch_pe42_out = buffer_7x7[4][2]; // Patch at (4,2)
-    assign patch_pe43_out = buffer_7x7[4][3]; // Patch at (4,3)
-    
-    assign patch_pe50_out = buffer_7x7[5][0]; // Patch at (5,0)
-    assign patch_pe51_out = buffer_7x7[5][1]; // Patch at (5,1)
-    assign patch_pe52_out = buffer_7x7[5][2]; // Patch at (5,2)
-    assign patch_pe53_out = buffer_7x7[5][3]; // Patch at (5,3)
-    
-    assign patch_pe60_out = buffer_7x7[6][0]; // Patch at (6,0)
-    assign patch_pe61_out = buffer_7x7[6][1]; // Patch at (6,1)
-    assign patch_pe62_out = buffer_7x7[6][2]; // Patch at (6,2)
-    assign patch_pe63_out = buffer_7x7[6][3]; // Patch at (6,3)
-    
-    assign patch_pe04_out = buffer_7x7[0][4]; // Patch at (0,4)
-    assign patch_pe05_out = buffer_7x7[0][5]; // Patch at (0,5)
-    assign patch_pe06_out = buffer_7x7[0][6]; // Patch at (0,6)
-    
-    assign patch_pe14_out = buffer_7x7[1][4]; // Patch at (1,4)
-    assign patch_pe15_out = buffer_7x7[1][5]; // Patch at (1,5)
-    assign patch_pe16_out = buffer_7x7[1][6]; // Patch at (1,6)
-    
-    assign patch_pe24_out = buffer_7x7[2][4]; // Patch at (2,4)
-    assign patch_pe25_out = buffer_7x7[2][5]; // Patch at (2,5)
-    assign patch_pe26_out = buffer_7x7[2][6]; // Patch at (2,6)
-    
-    assign patch_pe34_out = buffer_7x7[3][4]; // Patch at (3,4)
-    assign patch_pe35_out = buffer_7x7[3][5]; // Patch at (3,5)
-    assign patch_pe36_out = buffer_7x7[3][6]; // Patch at (3,6)
-    
-    assign patch_pe44_out = buffer_7x7[4][4]; // Patch at (4,4)
-    assign patch_pe45_out = buffer_7x7[4][5]; // Patch at (4,5)
-    assign patch_pe46_out = buffer_7x7[4][6]; // Patch at (4,6)
-    
-    assign patch_pe54_out = buffer_7x7[5][4]; // Patch at (5,4)
-    assign patch_pe55_out = buffer_7x7[5][5]; // Patch at (5,5)
-    assign patch_pe56_out = buffer_7x7[5][6]; // Patch at (5,6)
-    
-    assign patch_pe64_out = buffer_7x7[6][4]; // Patch at (6,4)
-    assign patch_pe65_out = buffer_7x7[6][5]; // Patch at (6,5)
-    assign patch_pe66_out = buffer_7x7[6][6]; // Patch at (6,6)
-    
-    // Status signals
-    assign block_ready = (state == BLOCK_READY) && loading_complete;
-    assign patches_valid = (state == BLOCK_READY) && loading_complete;
-    assign extraction_complete = (state == IDLE) && (32'(block_start_row) >= 32'(padded_height) - PATCHES_PER_BLOCK);
+    // Output assignments
+    assign patch_data_out = buffer_patch;
+    assign patches_valid = (state == BLOCK_READY) && ram_data_valid;
+    assign block_ready = (state == BLOCK_READY) && ram_data_valid;
+    assign extraction_complete = (state == COMPLETE);
     assign all_channels_done = (state == WAIT_NEXT_SPATIAL);
-    assign buffer_loading_complete = loading_complete;
+    assign buffer_loading_complete = ram_data_valid;
     
-    // Calculate address coordinates (without padding offset)
-    logic signed [$clog2(MAX_IMG_W + 2*MAX_PADDING)-1:0] image_start_col, image_start_row;
-    
-    // Convert padded coordinates to image coordinates
-    assign image_start_col = block_start_col + ($clog2(MAX_IMG_W + 2*MAX_PADDING))'(pad_left);
-    assign image_start_row = block_start_row + ($clog2(MAX_IMG_H + 2*MAX_PADDING))'(pad_top);
-    
-    // Check if block start is within valid image bounds and convert to unsigned
-    assign block_coords_valid = (image_start_col >= 0) && 
-                               (image_start_col < img_width) && 
-                               (image_start_row >= 0) && 
-                               (image_start_row < img_height);
-    
-    assign block_start_col_addr = block_coords_valid ? ($clog2(MAX_IMG_W))'(image_start_col) : '0;
-    assign block_start_row_addr = block_coords_valid ? ($clog2(MAX_IMG_H))'(image_start_row) : '0;
+    // Address outputs (convert from padded coordinates)
+    assign block_start_col_addr = (block_start_col >= -($clog2(MAX_IMG_W + 3))'(layer_pad_left)) ? 
+                                  ($clog2(MAX_IMG_W))'(block_start_col + ($clog2(MAX_IMG_W + 3))'(layer_pad_left)) : '0;
+    assign block_start_row_addr = (block_start_row >= -($clog2(MAX_IMG_H + 3))'(layer_pad_top)) ? 
+                                  ($clog2(MAX_IMG_H))'(block_start_row + ($clog2(MAX_IMG_H + 3))'(layer_pad_top)) : '0;
+    assign block_coords_valid = (block_start_col >= -($clog2(MAX_IMG_W + 3))'(layer_pad_left)) && 
+                               (block_start_row >= -($clog2(MAX_IMG_H + 3))'(layer_pad_top)) && 
+                               (($clog2(MAX_IMG_W + 3 + 1))'(block_start_col) < (padded_img_width - ($clog2(MAX_IMG_W + 3 + 1))'(layer_patch_size))) && 
+                               (($clog2(MAX_IMG_H + 3 + 1))'(block_start_row) < (padded_img_height - ($clog2(MAX_IMG_H + 3 + 1))'(layer_patch_size)));
 
 endmodule 

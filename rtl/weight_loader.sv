@@ -448,7 +448,7 @@ module weight_loader #(
                 all_columns_inactive = 1'b0;
             end
         end
-        // Combine conditions for transition
+        // Combine conditions for transition`
         transitioning_to_next_channel_group = all_weights_at_max && 
                                             all_columns_inactive && 
                                             (current_input_channel_group < max_channel_groups - 1);

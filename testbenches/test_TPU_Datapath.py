@@ -236,7 +236,7 @@ async def test_TPU_Datapath(dut):
 
         dut._log.info("All channels processed, proceeding with next layer")
 
-        # dut.channel_idx.value = 0
+        dut.channel_idx.value = 0
 
         # # Start block extraction
         # dut.num_columns_outptut.value = 8
@@ -275,7 +275,7 @@ async def test_TPU_Datapath(dut):
         # dut.channel_idx.value = 0
         # dut._log.info("All channels processed, proceeding with next layer")
 
-        # # LAYER 3
+        # LAYER 3
         # dut.channel_idx.value = 0
 
         # dut.num_columns_outptut.value = 4

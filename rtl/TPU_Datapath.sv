@@ -28,7 +28,6 @@ module TPU_Datapath #(
     ,input logic [$clog2(NUM_LAYERS)-1:0] layer_idx // Current layer index
     ,input logic [$clog2(MAX_NUM_CH)-1:0] channel_idx // Current output channel index
 
-
     ,input logic read_bias
     ,input logic load_bias
 
@@ -424,7 +423,7 @@ spatial_data_formatter SPATIAL_FORMATTER (
         ,.ROM_DEPTH(ROM_WEIGHT_DEPTH)
     ) weight_loader (
         .clk(clk)
-        ,.reset(reset | reset_datapath)
+        ,.reset(reset | reset_datapath | reset_sta)
         ,.start(start)
         ,.stall(stall)
         
