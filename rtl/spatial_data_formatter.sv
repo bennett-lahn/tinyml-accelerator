@@ -22,9 +22,7 @@ module spatial_data_formatter (
     output int8_t formatted_A1 [0:3], // Row 1, 4 channels of current column position  
     output int8_t formatted_A2 [0:3], // Row 2, 4 channels of current column position
     output int8_t formatted_A3 [0:3], // Row 3, 4 channels of current column position
-    output logic formatted_data_valid,
-    output logic all_cols_sent,
-    output logic next_block
+    output logic all_cols_sent
 );
 
     // Row and column counters for complete streaming
@@ -963,8 +961,6 @@ module spatial_data_formatter (
         end
     end
     
-    assign formatted_data_valid = (state == STREAMING_ROWS) && patches_valid;
     assign all_cols_sent = (state == IDLE) && (cycle_counter == 0);
-    assign next_block = all_cols_sent; // Request next block when all cycles are sent
 
 endmodule

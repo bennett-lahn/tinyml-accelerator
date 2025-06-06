@@ -224,7 +224,7 @@ module sta_controller #(
     ,.SA_N(SA_N)
   ) requant_unit (
     .clk(clk)
-    ,.reset(reset|reset_sta)
+    ,.reset(reset)
     ,.bypass_relu(bypass_relu)
     ,.layer_idx(layer_idx)
     ,.in_valid(requant_in_valid_flat)
@@ -244,7 +244,7 @@ module sta_controller #(
     ,.MAX_N(MAX_N)
   ) pool_unit (
     .clk(clk)
-    ,.reset(reset|reset_sta)
+    ,.reset(reset)
     ,.pos_row(controller_pos_row)
     ,.pos_col(controller_pos_col)
     ,.in_valid(requant_out_valid)

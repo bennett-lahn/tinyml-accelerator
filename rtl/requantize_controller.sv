@@ -133,8 +133,19 @@ module requantize_controller #(
         ,.out(out_data[ch])
       );
 
-      // Only consume buffer entry when scale/shift are valid and buffer has valid output
-      assign buf_consume[ch] = buf_out_valid[ch];
+      // This logic creates a single-cycle pulse for buf_consume
+      // to prevent back-to-back false consumption of buffer entries.
+      logic last_buf_consume;
+      always_ff @(posedge clk) begin
+        if (reset)
+          last_buf_consume <= 1'b0;
+        else
+          last_buf_consume <= buf_consume[ch];
+      end
+
+      // Only consume buffer entry when buffer has valid output.
+      // last_buf_consume ensures that consume is only pulsed for one cycle.
+      assign buf_consume[ch] = buf_out_valid[ch] & ~last_buf_consume;
 
       // Output valid when buffer output is valid
       assign out_valid[ch] = buf_out_valid[ch];
