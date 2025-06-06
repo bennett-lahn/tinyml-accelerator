@@ -10,7 +10,7 @@ module unified_buffer_harness #(
     input logic clk,
     input logic reset,
     
-    // Layer control - this would come from your main controller
+    // Layer control - this would come from your main controller will be used to mux between the different unif_bufs
     input logic [2:0] current_layer_idx,  // Updated by controller as layers progress
     
     // Control signals (same interface as unified_buffer)
@@ -22,6 +22,7 @@ module unified_buffer_harness #(
     output logic ram_re,
     output logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] ram_addr,
     input logic [31:0] ram_dout0, ram_dout1, ram_dout2, ram_dout3,
+    input logic ram_data_valid,
     
     // Status outputs (same as unified_buffer)
     output logic block_ready,
@@ -51,40 +52,293 @@ module unified_buffer_harness #(
     output logic patches_valid
 );
 
+
+    logic start_extraction_0;
+    logic next_channel_group_0;
+    logic next_spatial_block_0;
     // Internal patch data from layer-specific extractor
-    logic [31:0] layer_patch_data [6:0][6:0];
-    logic layer_patches_valid;
+    logic [31:0] layer_patch_data_0 [6:0][6:0];
+    logic layer_patches_valid_0;
+
+    logic ram_re_0;
+    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] ram_addr_0;
+    logic [31:0] ram_dout0_0, ram_dout1_0, ram_dout2_0, ram_dout3_0;
+    logic ram_data_valid_0;
+
+    logic block_ready_0;
+    logic extraction_complete_0;
+    logic all_channels_done_0;
+    logic buffer_loading_complete_0;
+    logic block_coords_valid_0;
+    logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr_0;
+    logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr_0;
 
     // Instantiate the layer-specific extractor
-    layer_specific_extractor #(
+    unif_buf_0 #(
         .MAX_IMG_W(MAX_IMG_W),
         .MAX_IMG_H(MAX_IMG_H),
         .MAX_CHANNELS(MAX_CHANNELS),
         .MAX_PADDING(MAX_PADDING)
-    ) layer_extractor_inst (
+    ) unif_buf_0_inst (
         .clk(clk),
         .reset(reset),
-        .layer_idx(current_layer_idx),
-        .start_extraction(start_extraction),
-        .next_channel_group(next_channel_group),
-        .next_spatial_block(next_spatial_block),
-        .ram_re(ram_re),
-        .ram_addr(ram_addr),
-        .ram_dout0(ram_dout0),
-        .ram_dout1(ram_dout1),
-        .ram_dout2(ram_dout2),
-        .ram_dout3(ram_dout3),
-        .block_ready(block_ready),
-        .extraction_complete(extraction_complete),
-        .all_channels_done(all_channels_done),
-        .buffer_loading_complete(buffer_loading_complete),
-        .block_start_col_addr(block_start_col_addr),
-        .block_start_row_addr(block_start_row_addr),
-        .block_coords_valid(block_coords_valid),
-        .patch_data_out(layer_patch_data),
-        .patches_valid(layer_patches_valid)
+        .start_extraction(start_extraction_0),
+        .next_channel_group(next_channel_group_0),
+        .next_spatial_block(next_spatial_block_0),
+        .ram_re(ram_re_0),
+        .ram_addr(ram_addr_0),
+        .ram_dout0(ram_dout0_0),
+        .ram_dout1(ram_dout1_0),
+        .ram_dout2(ram_dout2_0),
+        .ram_dout3(ram_dout3_0),
+        .ram_data_valid(ram_data_valid_0),
+        .block_ready(block_ready_0),
+        .extraction_complete(extraction_complete_0),
+        .all_channels_done(all_channels_done_0),
+        .buffer_loading_complete(buffer_loading_complete_0),
+        .block_start_col_addr(block_start_col_addr_0),
+        .block_start_row_addr(block_start_row_addr_0),
+        .block_coords_valid(block_coords_valid_0),
+        .patch_data_out(layer_patch_data_0),
+        .patches_valid(layer_patches_valid_0)
     );
 
+    logic start_extraction_1;
+    logic next_channel_group_1;
+    logic next_spatial_block_1;
+    logic ram_re_1;
+    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] ram_addr_1;
+    logic [31:0] ram_dout0_1, ram_dout1_1, ram_dout2_1, ram_dout3_1;
+    logic ram_data_valid_1;
+    logic block_ready_1;
+    logic extraction_complete_1;
+    logic all_channels_done_1;
+    logic buffer_loading_complete_1;
+    logic block_coords_valid_1;
+    logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr_1;
+    logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr_1;
+    logic [31:0] layer_patch_data_1 [6:0][6:0];
+    logic layer_patches_valid_1;
+
+    unif_buf_1 #(
+        .MAX_IMG_W(MAX_IMG_W),
+        .MAX_IMG_H(MAX_IMG_H),
+        .MAX_CHANNELS(MAX_CHANNELS),
+        .MAX_PADDING(MAX_PADDING)
+    ) unif_buf_1_inst (
+        .clk(clk),
+        .reset(reset),
+        .start_extraction(start_extraction_1),
+        .next_channel_group(next_channel_group_1),
+        .next_spatial_block(next_spatial_block_1),
+        .ram_re(ram_re_1),
+        .ram_addr(ram_addr_1),
+        .ram_dout0(ram_dout0_1),
+        .ram_dout1(ram_dout1_1),
+        .ram_dout2(ram_dout2_1),
+        .ram_dout3(ram_dout3_1),
+        .ram_data_valid(ram_data_valid_1),
+        .block_ready(block_ready_1),
+        .extraction_complete(extraction_complete_1),
+        .all_channels_done(all_channels_done_1),
+        .buffer_loading_complete(buffer_loading_complete_1),
+        .block_start_col_addr(block_start_col_addr_1),
+        .block_start_row_addr(block_start_row_addr_1),
+        .block_coords_valid(block_coords_valid_1),
+        .patch_data_out(layer_patch_data_1),
+        .patches_valid(layer_patches_valid_1)
+    );
+
+    logic start_extraction_2;
+    logic next_channel_group_2;
+    logic next_spatial_block_2;
+    logic ram_re_2;
+    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] ram_addr_2;
+    logic [31:0] ram_dout0_2, ram_dout1_2, ram_dout2_2, ram_dout3_2;
+    logic ram_data_valid_2;
+    logic block_ready_2;
+    logic extraction_complete_2;
+    logic all_channels_done_2;
+    logic buffer_loading_complete_2;
+    logic block_coords_valid_2;
+    logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr_2;
+    logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr_2;
+    logic [31:0] layer_patch_data_2 [6:0][6:0];
+    logic layer_patches_valid_2;
+
+    unif_buf_2 #(
+        .MAX_IMG_W(MAX_IMG_W),
+        .MAX_IMG_H(MAX_IMG_H),
+        .MAX_CHANNELS(MAX_CHANNELS),
+        .MAX_PADDING(MAX_PADDING)
+    ) unif_buf_2_inst (
+        .clk(clk),
+        .reset(reset),
+        .start_extraction(start_extraction_2),
+        .next_channel_group(next_channel_group_2),
+        .next_spatial_block(next_spatial_block_2),
+        .ram_re(ram_re_2),
+        .ram_addr(ram_addr_2),
+        .ram_dout0(ram_dout0_2),
+        .ram_dout1(ram_dout1_2),
+        .ram_dout2(ram_dout2_2),
+        .ram_dout3(ram_dout3_2),
+        .ram_data_valid(ram_data_valid_2),
+        .block_ready(block_ready_2),
+        .extraction_complete(extraction_complete_2),
+        .all_channels_done(all_channels_done_2),
+        .buffer_loading_complete(buffer_loading_complete_2),
+        .block_start_col_addr(block_start_col_addr_2),
+        .block_start_row_addr(block_start_row_addr_2),
+        .block_coords_valid(block_coords_valid_2),
+        .patch_data_out(layer_patch_data_2),
+        .patches_valid(layer_patches_valid_2)
+    );
+
+    logic start_extraction_3;
+    logic next_channel_group_3;
+    logic next_spatial_block_3;
+    logic ram_re_3;
+    logic [$clog2(MAX_IMG_W*MAX_IMG_H*MAX_CHANNELS/4)-1:0] ram_addr_3;
+    logic [31:0] ram_dout0_3, ram_dout1_3, ram_dout2_3, ram_dout3_3;
+    logic ram_data_valid_3;
+    logic block_ready_3;
+    logic extraction_complete_3;
+    logic all_channels_done_3;
+    logic buffer_loading_complete_3;
+    logic block_coords_valid_3;
+    logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr_3;
+    logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr_3;
+    logic [31:0] layer_patch_data_3 [6:0][6:0];
+    logic layer_patches_valid_3;
+
+    unif_buf_3 #(
+        .MAX_IMG_W(MAX_IMG_W),
+        .MAX_IMG_H(MAX_IMG_H),
+        .MAX_CHANNELS(MAX_CHANNELS),
+        .MAX_PADDING(MAX_PADDING)
+    ) unif_buf_3_inst (
+        .clk(clk),
+        .reset(reset),
+        .start_extraction(start_extraction_3),
+        .next_channel_group(next_channel_group_3),
+        .next_spatial_block(next_spatial_block_3),
+        .ram_re(ram_re_3),
+        .ram_addr(ram_addr_3),
+        .ram_dout0(ram_dout0_3),
+        .ram_dout1(ram_dout1_3),
+        .ram_dout2(ram_dout2_3),
+        .ram_dout3(ram_dout3_3),
+        .ram_data_valid(ram_data_valid_3),
+        .block_ready(block_ready_3),
+        .extraction_complete(extraction_complete_3),
+        .all_channels_done(all_channels_done_3),
+        .buffer_loading_complete(buffer_loading_complete_3),
+        .block_start_col_addr(block_start_col_addr_3),
+        .block_start_row_addr(block_start_row_addr_3),
+        .block_coords_valid(block_coords_valid_3),
+        .patch_data_out(layer_patch_data_3),
+        .patches_valid(layer_patches_valid_3)
+    );
+    
+    
+    //mux between the different layer-specific buffers
+    always_comb begin
+        case (current_layer_idx)
+            0: begin
+                start_extraction_0 = start_extraction;
+                next_channel_group_0 = next_channel_group;
+                next_spatial_block_0 = next_spatial_block;
+                ram_re = ram_re_0;
+                ram_addr = ram_addr_0;
+                ram_dout0_0 = ram_dout0;
+                ram_dout1_0 = ram_dout1;
+                ram_dout2_0 = ram_dout2;
+                ram_dout3_0 = ram_dout3;
+                ram_data_valid_0 = ram_data_valid;
+                block_ready = block_ready_0;
+                extraction_complete = extraction_complete_0;
+                all_channels_done = all_channels_done_0;
+                buffer_loading_complete = buffer_loading_complete_0;
+                block_coords_valid = block_coords_valid_0;
+                layer_patch_data = layer_patch_data_0;
+                layer_patches_valid = layer_patches_valid_0;
+                block_start_col_addr = block_start_col_addr_0;
+                block_start_row_addr = block_start_row_addr_0;
+                
+            end
+            1: begin
+                start_extraction_1 = start_extraction;
+                next_channel_group_1 = next_channel_group;
+                next_spatial_block_1 = next_spatial_block;
+                ram_re = ram_re_1;
+                ram_addr = ram_addr_1;
+                ram_dout0_1 = ram_dout0;
+                ram_dout1_1 = ram_dout1;
+                ram_dout2_1 = ram_dout2;
+                ram_dout3_1 = ram_dout3;
+                ram_data_valid_1 = ram_data_valid;
+                block_ready = block_ready_1;
+                extraction_complete = extraction_complete_1;
+                all_channels_done = all_channels_done_1;
+                buffer_loading_complete = buffer_loading_complete_1;
+                block_coords_valid = block_coords_valid_1;
+                layer_patch_data = layer_patch_data_1;
+                layer_patches_valid = layer_patches_valid_1;
+                block_start_col_addr = block_start_col_addr_1;
+                block_start_row_addr = block_start_row_addr_1;
+                layer_patch_data = layer_patch_data_1;
+                layer_patches_valid = layer_patches_valid_1;
+            end
+            2: begin
+                start_extraction_2 = start_extraction;
+                next_channel_group_2 = next_channel_group;
+                next_spatial_block_2 = next_spatial_block;
+                ram_re = ram_re_2;
+                ram_addr = ram_addr_2;
+                ram_dout0_2 = ram_dout0;
+                ram_dout1_2 = ram_dout1;
+                ram_dout2_2 = ram_dout2;
+                ram_dout3_2 = ram_dout3;
+                ram_data_valid_2 = ram_data_valid;
+                block_ready = block_ready_2;
+                extraction_complete = extraction_complete_2;
+                all_channels_done = all_channels_done_2;
+                buffer_loading_complete = buffer_loading_complete_2;
+                block_coords_valid = block_coords_valid_2;
+                layer_patch_data = layer_patch_data_2;
+                layer_patches_valid = layer_patches_valid_2;
+                block_start_col_addr = block_start_col_addr_2;
+                block_start_row_addr = block_start_row_addr_2;
+                layer_patch_data = layer_patch_data_2;
+                layer_patches_valid = layer_patches_valid_2;
+            end
+            3: begin
+                start_extraction_3 = start_extraction;
+                next_channel_group_3 = next_channel_group;
+                next_spatial_block_3 = next_spatial_block;
+                ram_re = ram_re_3;
+                ram_addr = ram_addr_3;
+                ram_dout0_3 = ram_dout0;
+                ram_dout1_3 = ram_dout1;
+                ram_dout2_3 = ram_dout2;
+                ram_dout3_3 = ram_dout3;
+                ram_data_valid_3 = ram_data_valid;
+                block_ready = block_ready_3;
+                extraction_complete = extraction_complete_3;
+                all_channels_done = all_channels_done_3;
+                buffer_loading_complete = buffer_loading_complete_3;
+                block_coords_valid = block_coords_valid_3;
+                layer_patch_data = layer_patch_data_3;
+                layer_patches_valid = layer_patches_valid_3;
+                block_start_col_addr = block_start_col_addr_3;
+                block_start_row_addr = block_start_row_addr_3;
+                layer_patch_data = layer_patch_data_3;
+                layer_patches_valid = layer_patches_valid_3;
+            end
+        endcase
+    end
+        
     // Map variable-sized patches to fixed PE grid
     // This maintains compatibility with existing PE array expectations
     always_comb begin
@@ -153,6 +407,7 @@ endmodule
         .ram_dout1(buffer_ram_in1),
         .ram_dout2(buffer_ram_in2),
         .ram_dout3(buffer_ram_in3),
+        .ram_data_valid(buffer_ram_data_valid),
         .block_ready(block_ready),
         .extraction_complete(block_extraction_complete),
         .all_channels_done(all_channels_done),
