@@ -19,15 +19,11 @@ module unif_buf_0 #(
     input logic ram_data_valid,
     
     // Status outputs
-    output logic block_ready,
-    output logic extraction_complete,
     output logic all_channels_done,
-    output logic buffer_loading_complete,
     
     // Address calculation outputs
     output logic [$clog2(MAX_IMG_W)-1:0] block_start_col_addr,
     output logic [$clog2(MAX_IMG_H)-1:0] block_start_row_addr,
-    output logic block_coords_valid,
     
     // Data outputs - variable patch sizes based on layer
     output logic [31:0] patch_data_out [6:0][6:0],  // Maximum 7x7 buffer
@@ -78,7 +74,6 @@ module unif_buf_0 #(
     
     // RAM data cache for 128-bit reads
     logic [127:0] ram_data_cache;
-    logic cache_valid;
     
     // Loading counters
     logic [$clog2(64)-1:0] ram_read_count;
@@ -190,7 +185,6 @@ module unif_buf_0 #(
             ram_read_count <= 0;
             extract_row <= 0;
             extract_col <= 0;
-            cache_valid <= 1'b0;
             ram_data_cache <= '0;
             last_addr <= 1'b0;
             for (int i = 0; i < 7; i++) begin
@@ -207,7 +201,6 @@ module unif_buf_0 #(
                         ram_read_count <= 0;
                         extract_row <= 0;
                         extract_col <= 0;
-                        cache_valid <= 1'b0;
                         buf_row <= 0;
                         buf_col <= 0;
                         last_addr <= 1'b0;
@@ -234,8 +227,8 @@ module unif_buf_0 #(
                             buf_col <= buf_col + 1;
                         end
                         if(last_addr) begin
-                            $display("buffer_start_col: %d, buffer_start_row: %d", block_start_col, block_start_row);
-                            $display("last_addr, moving to block_ready_state");
+                            // $display("buffer_start_col: %d, buffer_start_row: %d", block_start_col, block_start_row);
+                            // $display("last_addr, moving to block_ready_state");
                             state <= BLOCK_READY_STATE;
                         end
                         patch_row <= buf_row;
@@ -243,21 +236,21 @@ module unif_buf_0 #(
                 end
                 BLOCK_READY_STATE: begin
                     if (next_spatial_block) begin
-                        $display("next_spatial_block, moving to LOADING_BLOCK");
+                        // $display("next_spatial_block, moving to LOADING_BLOCK");
                         // Move to next spatial block
                         state <= LOADING_BLOCK;
                         if (block_start_col + LAYER_0_STRIDE < (LAYER_0_IMG_WIDTH + LAYER_0_PAD_RIGHT - LAYER_0_PATCH_SIZE + 1)) begin
                             //move right
-                            $display("moving right");
+                            // $display("moving right");
                             block_start_col <= block_start_col + LAYER_0_STRIDE;
                             // $display("mystery addition: %d", block_start_col + LAYER_0_STRIDE);
                         end else if (block_start_row + LAYER_0_STRIDE < (LAYER_0_IMG_HEIGHT + LAYER_0_PAD_BOTTOM - LAYER_0_PATCH_SIZE + 1)) begin
                             //move down
-                            $display("moving down");
+                            // $display("moving down");
                             block_start_row <= block_start_row + LAYER_0_STRIDE;
                             block_start_col <= -LAYER_0_PAD_LEFT;
                         end else begin
-                            $display("no more blocks to process");
+                            // $display("no more blocks to process");
                             //no more blocks to process
                             state <= COMPLETE;
                         end
@@ -265,7 +258,6 @@ module unif_buf_0 #(
                         
                     
                     ram_read_count <= 0;
-                    cache_valid <= 1'b0;
                     buf_row <= 0;
                     buf_col <= 0;
                     last_addr <= 1'b0;
@@ -334,17 +326,13 @@ module unif_buf_0 #(
     // Output assignments
     assign patch_data_out = buffer_patch;
     assign patches_valid = (state == BLOCK_READY_STATE);
-    assign block_ready = (state == BLOCK_READY_STATE);
-    assign extraction_complete = (state == COMPLETE);
     assign all_channels_done = (state == COMPLETE);
-    assign buffer_loading_complete = cache_valid && (state == BLOCK_READY_STATE);
     
     // Address outputs (convert from padded coordinates to image coordinates)
     assign block_start_col_addr = (block_start_col >= -LAYER_0_PAD_LEFT) ? 
                                   (block_start_col + LAYER_0_PAD_LEFT) : 0;
     assign block_start_row_addr = (block_start_row >= -LAYER_0_PAD_TOP) ? 
                                   (block_start_row + LAYER_0_PAD_TOP) : 0;
-    assign block_coords_valid = (state == BLOCK_READY_STATE);
     
 endmodule
 
