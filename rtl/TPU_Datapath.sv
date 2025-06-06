@@ -415,6 +415,7 @@ spatial_data_formatter SPATIAL_FORMATTER (
         ,.reset(reset | reset_datapath | reset_sta)
         ,.start(start & patches_valid)
         ,.stall(stall)
+        ,.next_channel_group(next_channel_group)
         
         ,.output_channel_idx(channel_idx)
         ,.current_layer_idx(layer_idx)

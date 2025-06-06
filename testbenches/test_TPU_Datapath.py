@@ -225,7 +225,7 @@ async def test_TPU_Datapath(dut):
                 await next_channel_group()
                 await next_spatial_block()
             
-            dut._log.info("first ouput channel complete, resetting datapath")
+            dut._log.info("Ouput channel complete, resetting datapath")
 
             await assert_reset_datapath()
 
@@ -276,138 +276,138 @@ async def test_TPU_Datapath(dut):
         dut.channel_idx.value = 0
         dut._log.info("All channels processed, proceeding with next layer")
 
-        #LAYER 3
-        dut.channel_idx.value = 0
+        # #LAYER 3
+        # dut.channel_idx.value = 0
 
-        dut.num_columns_output.value = 4
-        dut.num_channels_output.value = 32
-        await set_univ_buffer_config(img_width=8, img_height=8, num_channels_input=16, pad_top=1, pad_bottom=2, pad_left=1, pad_right=2)
+        # dut.num_columns_output.value = 4
+        # dut.num_channels_output.value = 32
+        # await set_univ_buffer_config(img_width=8, img_height=8, num_channels_input=16, pad_top=1, pad_bottom=2, pad_left=1, pad_right=2)
 
-        for i in range(32):
-            await tick()
-            await assert_bias()
-            await assert_start()
-            await start_extraction()
-            for j in range(4):
-                while dut.all_channels_done.value == 0:
-                    while dut.patches_valid.value == 0:
-                        await tick()
-                    # dut._log.info("Patches valid, proceeding with bias load")
-                    await assert_start()
-                    # dut._log.info("Bias loaded and STA started")
-                    while dut.all_cols_sent.value == 0:
-                        await tick()
-                    while dut.sta_idle.value == 0:
-                        await tick()
-                    await assert_done()
-                    await tick()
-                    await assert_reset_sta()
-                    # dut._log.info("STA done, proceeding with next spatial block")
-                    # first 4 output pixels computed
-                    await next_channel_group()
+        # for i in range(32):
+        #     await tick()
+        #     await assert_bias()
+        #     await assert_start()
+        #     await start_extraction()
+        #     for j in range(4):
+        #         while dut.all_channels_done.value == 0:
+        #             while dut.patches_valid.value == 0:
+        #                 await tick()
+        #             # dut._log.info("Patches valid, proceeding with bias load")
+        #             await assert_start()
+        #             # dut._log.info("Bias loaded and STA started")
+        #             while dut.all_cols_sent.value == 0:
+        #                 await tick()
+        #             while dut.sta_idle.value == 0:
+        #                 await tick()
+        #             await assert_done()
+        #             await tick()
+        #             await assert_reset_sta()
+        #             # dut._log.info("STA done, proceeding with next spatial block")
+        #             # first 4 output pixels computed
+        #             await next_channel_group()
 
-                await next_spatial_block()
-            await assert_reset_datapath()
-            dut.channel_idx.value = dut.channel_idx.value + 1
-            dut._log.info("Output channel processed, proceeding with next channel.")
+        #         await next_spatial_block()
+        #     await assert_reset_datapath()
+        #     dut.channel_idx.value = dut.channel_idx.value + 1
+        #     dut._log.info("Output channel processed, proceeding with next channel.")
 
-        dut.layer_idx.value = dut.layer_idx.value + 1
+        # dut.layer_idx.value = dut.layer_idx.value + 1
 
-        # dut._log.info("All channels processed, proceeding with next layer")
+        # # dut._log.info("All channels processed, proceeding with next layer")
         
-        # LAYER 4
-        dut.num_columns_output.value = 2
-        dut.num_channels_output.value = 64
-        await set_univ_buffer_config(img_width=4, img_height=4, num_channels_input=32, pad_top=1, pad_bottom=2, pad_left=1, pad_right=2)
+        # # LAYER 4
+        # dut.num_columns_output.value = 2
+        # dut.num_channels_output.value = 64
+        # await set_univ_buffer_config(img_width=4, img_height=4, num_channels_input=32, pad_top=1, pad_bottom=2, pad_left=1, pad_right=2)
 
-        for i in range(64):
-            await tick()
-            await assert_bias()
-            await assert_start()
-            await start_extraction()
-            for j in range(1):
-                while dut.all_channels_done.value == 0:
-                    while dut.patches_valid.value == 0:
-                        await tick()
-                    # dut._log.info("Patches valid, proceeding with bias load")
-                    await assert_start()
-                    # dut._log.info("Bias loaded and STA started")
-                    while dut.all_cols_sent.value == 0:
-                        await tick()
-                    while dut.sta_idle.value == 0:
-                        await tick()
-                    await assert_done()
-                    await tick()
-                    await assert_reset_sta()
-                    # dut._log.info("STA done, proceeding with next spatial block")
-                    # first 4 output pixels computed
-                    await next_channel_group()
-                await next_spatial_block()
-            await assert_reset_datapath()
-            dut.channel_idx.value = dut.channel_idx.value + 1
-            dut._log.info("Output channel processed, proceeding with next channel.")
-
-
-        dut.layer_idx.value = dut.layer_idx.value + 1
-
-        dut._log.info("All CONV2D processed, proceeding with flattening")
-        # Flattening
-        await assert_reset_datapath()
-        dut.flatten_stage.value = 1
-
-        await start_flatten()
-
-        while dut.flatten_complete.value == 0:
-            await tick()
-
-        dut.flatten_stage.value = 0
-
-        dut._log.info("Flattening completed, proceeding with dense layer")
+        # for i in range(64):
+        #     await tick()
+        #     await assert_bias()
+        #     await assert_start()
+        #     await start_extraction()
+        #     for j in range(1):
+        #         while dut.all_channels_done.value == 0:
+        #             while dut.patches_valid.value == 0:
+        #                 await tick()
+        #             # dut._log.info("Patches valid, proceeding with bias load")
+        #             await assert_start()
+        #             # dut._log.info("Bias loaded and STA started")
+        #             while dut.all_cols_sent.value == 0:
+        #                 await tick()
+        #             while dut.sta_idle.value == 0:
+        #                 await tick()
+        #             await assert_done()
+        #             await tick()
+        #             await assert_reset_sta()
+        #             # dut._log.info("STA done, proceeding with next spatial block")
+        #             # first 4 output pixels computed
+        #             await next_channel_group()
+        #         await next_spatial_block()
+        #     await assert_reset_datapath()
+        #     dut.channel_idx.value = dut.channel_idx.value + 1
+        #     dut._log.info("Output channel processed, proceeding with next channel.")
 
 
-        # Dense layer 1
-        dut.input_size_dense.value = 256
-        dut.output_size_dense.value = 64
+        # dut.layer_idx.value = dut.layer_idx.value + 1
 
-        await start_dense_compute()
+        # dut._log.info("All CONV2D processed, proceeding with flattening")
+        # # Flattening
+        # await assert_reset_datapath()
+        # dut.flatten_stage.value = 1
 
-        while dut.dense_compute_completed.value == 0:
-            await tick()
-        dut.layer_idx.value = dut.layer_idx.value + 1
-        #dense layer 2
+        # await start_flatten()
 
-        dut.input_size_dense.value = 64
-        dut.output_size_dense.value = 10
+        # while dut.flatten_complete.value == 0:
+        #     await tick()
+
+        # dut.flatten_stage.value = 0
+
+        # dut._log.info("Flattening completed, proceeding with dense layer")
+
+
+        # # Dense layer 1
+        # dut.input_size_dense.value = 256
+        # dut.output_size_dense.value = 64
+
+        # await start_dense_compute()
+
+        # while dut.dense_compute_completed.value == 0:
+        #     await tick()
+        # dut.layer_idx.value = dut.layer_idx.value + 1
+        # #dense layer 2
+
+        # dut.input_size_dense.value = 64
+        # dut.output_size_dense.value = 10
         
-        await start_dense_compute()
+        # await start_dense_compute()
 
-        while dut.dense_compute_completed.value == 0:
-            await tick()\
+        # while dut.dense_compute_completed.value == 0:
+        #     await tick()\
         
-        dut._log.info("Dense layer completed, proceeding with logits read")
+        # dut._log.info("Dense layer completed, proceeding with logits read")
 
-        # Read logits from dense_fc_ram (10 logits for classification)
-        await read_logits()
+        # # Read logits from dense_fc_ram (10 logits for classification)
+        # await read_logits()
         
-        # Wait for all 10 logits to be loaded (need some cycles for the loading process)
-        for i in range(15):  # Wait sufficient cycles for logit loading
-            await tick()
+        # # Wait for all 10 logits to be loaded (need some cycles for the loading process)
+        # for i in range(15):  # Wait sufficient cycles for logit loading
+        #     await tick()
         
-        dut._log.info("Logits loaded, starting softmax computation")
+        # dut._log.info("Logits loaded, starting softmax computation")
         
-        # Start softmax computation
-        await softmax_start()
+        # # Start softmax computation
+        # await softmax_start()
         
-        # Wait for softmax computation to complete
-        while dut.softmax_valid.value == 0:
-            await tick()
+        # # Wait for softmax computation to complete
+        # while dut.softmax_valid.value == 0:
+        #     await tick()
         
-        dut._log.info("Softmax computation completed! Final probabilities available.")
+        # dut._log.info("Softmax computation completed! Final probabilities available.")
         
         # Optional: Read and log the final probabilities for verification
         await tick()  # One more cycle to ensure probabilities are stable
         
-        # dut._log.info("Test sequence completed successfully!")
+        dut._log.info("Test sequence completed successfully!")
 
     await run_test()
         

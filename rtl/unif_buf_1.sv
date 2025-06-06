@@ -363,4 +363,3 @@ module unif_buf_1 #(
                                   (block_start_row + LAYER_1_PAD_TOP) : 0;
     
 endmodule
-

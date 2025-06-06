@@ -76,7 +76,6 @@ module sta_controller #(
   logic                          oc_out_valid_flat_internal [TOTAL_PES]; 
   logic [CTRL_N_BITS-1:0]        oc_out_row_flat_internal   [TOTAL_PES]; 
   logic [CTRL_N_BITS-1:0]        oc_out_col_flat_internal   [TOTAL_PES]; 
-  logic [CH_BITS-1:0]            oc_out_chnnl_flat_internal [TOTAL_PES];
 
   // Unpack flattened 1D inputs into intermediate 2D arrays
   always_comb begin

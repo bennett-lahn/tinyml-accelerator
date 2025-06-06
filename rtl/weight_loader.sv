@@ -24,6 +24,7 @@ module weight_loader #(
     input  logic reset,
     input  logic start,                         // Start weight loading sequence
     input  logic stall,                         // Stall signal from system
+    input  logic next_channel_group,            // External signal to transition to next channel group
     
     // Configuration inputs
     input  logic [$clog2(MAX_NUM_CH)-1:0] output_channel_idx, // Current output channel being processed
@@ -80,13 +81,15 @@ module weight_loader #(
     logic all_columns_done;
     
     // Column-specific counters and control
-    logic [1:0] col_delay_count [0:3];       // Delay counter for each column before starting
+    logic [2:0] col_delay_count [0:3];       // Delay counter for each column before starting
     logic [2:0] col_cycle_count [0:3];       // Cycle counter within weight/zero phases for each column
     logic [3:0] col_weight_position [0:3];   // Current weight position in row-major order (0-15) for each column
     logic col_active [0:3];                  // Whether each column is actively sending weights
     
     // Channel group transition control
     logic transitioning_to_next_channel_group;      // Signal to indicate we're transitioning to next input channel group
+    logic ready_for_next_channel_group;             // Signal to indicate we're ready to transition to next input channel group if asserted
+    
     
     // ROM control signals
     logic rom_data_valid;                           // ROM data is valid this cycle (internal use)
@@ -214,41 +217,43 @@ module weight_loader #(
         end else if (!stall) begin
             case (main_current_state)
                 MAIN_IDLE: begin
-                    if (start) begin
-                        current_input_channel_group <= 'd0;
-                        // Don't reset buffer_row here - only reset when transitioning to next channel
-                    end
+                    // if (start) begin
+                    //     current_input_channel_group <= 'd0;
+                    //     // Don't reset buffer_row here - only reset when transitioning to next channel
+                    // end
                     if (main_next_state == MAIN_RUNNING) begin
                         buffer_row_addr_idx <= 'd1;
                     end
                 end
                 
                 MAIN_RUNNING: begin
-                    // Manage buffer_row_addr_idx (for ROM address)
-                    if (weight_rom_read_enable) begin // Increment when a read is initiated
-                        if (buffer_row_addr_idx == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
-                           // Keep at max if already there and still reading (should not happen with corrected enable)
-                           buffer_row_addr_idx <= 'd0; // Reset to 0 so next ROM read is ready when transitioning to next channel group
-                        end else begin
-                           buffer_row_addr_idx <= buffer_row_addr_idx + 'd1;
-                        end
-                    end else if (transitioning_to_next_channel_group) begin // Reset for next channel group
-                        buffer_row_addr_idx <= 'd1;
-                    end
-
-                    // Manage buffer_row_write_idx (for buffer write)
-                    // Special case for first layer with only 1 input channel - write index fixed
-                    if (current_layer_idx == 0) begin
-                        buffer_row_write_idx <= ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1);
+                    if (transitioning_to_next_channel_group) begin
+                        // When transitioning to next channel group, increment channel group and reset indices
+                        current_input_channel_group <= current_input_channel_group + 'd1;
+                        buffer_row_write_idx <= 'd0;
+                        buffer_row_addr_idx <= 'd0; // Will be set to 1 when starting next group
                     end else begin
-                        if (transitioning_to_next_channel_group) begin
-                            current_input_channel_group <= current_input_channel_group + 'd1;
-                            buffer_row_write_idx <= 'd0;  // Reset write index for next channel group
-                        end else if (rom_data_valid) begin // Increment when ROM data is valid for writing
-                            if (buffer_row_write_idx == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
-                                buffer_row_write_idx <= buffer_row_write_idx; // Stay at max value
+                        // Manage buffer_row_addr_idx (for ROM address)
+                        if (weight_rom_read_enable) begin // Increment when a read is initiated
+                            if (buffer_row_addr_idx == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
+                               // Keep at max if already there and still reading (should not happen with corrected enable)
+                               buffer_row_addr_idx <= 'd0; // Reset to 0 so next ROM read is ready when transitioning to next channel group
                             end else begin
-                                buffer_row_write_idx <= buffer_row_write_idx + 'd1;
+                               buffer_row_addr_idx <= buffer_row_addr_idx + 'd1;
+                            end
+                        end
+
+                        // Manage buffer_row_write_idx (for buffer write)
+                        // Special case for first layer with only 1 input channel - write index fixed
+                        if (current_layer_idx == 0) begin
+                            buffer_row_write_idx <= ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1);
+                        end else begin
+                            if (rom_data_valid) begin // Increment when ROM data is valid for writing
+                                if (buffer_row_write_idx == ($clog2(KERNEL_SIZE))'(KERNEL_SIZE - 1)) begin
+                                    buffer_row_write_idx <= buffer_row_write_idx; // Stay at max value
+                                end else begin
+                                    buffer_row_write_idx <= buffer_row_write_idx + 'd1;
+                                end
                             end
                         end
                     end
@@ -429,7 +434,7 @@ module weight_loader #(
         end
     end
     
-    // Detect transition to next channel group
+    // Detect readiness for next channel group transition
     always_comb begin
         logic all_weights_at_max;
         logic all_columns_inactive;
@@ -448,10 +453,13 @@ module weight_loader #(
                 all_columns_inactive = 1'b0;
             end
         end
-        // Combine conditions for transition`
-        transitioning_to_next_channel_group = all_weights_at_max && 
-                                            all_columns_inactive && 
-                                            (current_input_channel_group < max_channel_groups - 1);
+        // Determine readiness for next channel group
+        ready_for_next_channel_group = all_weights_at_max && 
+                                     all_columns_inactive && 
+                                     (current_input_channel_group < max_channel_groups - 1);
+        
+        // Only transition when ready AND external signal is asserted
+        transitioning_to_next_channel_group = ready_for_next_channel_group && next_channel_group;
     end
     
     // Main FSM next state logic
@@ -468,10 +476,9 @@ module weight_loader #(
             MAIN_RUNNING: begin
                 if (all_columns_done) begin
                     main_next_state = MAIN_DONE;
-                end else if (all_columns_completed_zero_phase && 
-                           current_input_channel_group < max_channel_groups - 1) begin
-                    // Need to load next channel group
-                    main_next_state = MAIN_RUNNING;
+                end else if (transitioning_to_next_channel_group) begin
+                    // Transition back to IDLE to wait for start signal for next channel group
+                    main_next_state = MAIN_IDLE;
                 end
             end
             
@@ -510,10 +517,10 @@ module weight_loader #(
                     end
                     
                     COL_DELAY: begin
-                        // Each column has a different delay: col 1=1 cycle, col 2=2 cycles, col 3=3 cycles
+                        // Each column has a different delay: col 1=2 cycle, col 2=4 cycles, col 3=6 cycles
                         // col_delay_count starts at 0 and increments each cycle in COL_DELAY state
                         // So we transition when count reaches (i-1) to get i cycles of delay
-                        if (col_delay_count[i] == 2'(i - 1)) begin
+                        if (col_delay_count[i] == 3'(i*2 - 1)) begin
                             col_next_state[i] = COL_WEIGHT_PHASE;
                         end
                     end
