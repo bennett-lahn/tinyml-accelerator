@@ -139,9 +139,7 @@ module dense_layer_compute (
                     // Bias is loaded into MAC on this cycle
                     // No additional logic needed here as MAC handles the loading
                     // Ensure clean state for output computation
-                    if (input_idx != 0) begin
-                        input_idx <= 0;
-                    end
+                    input_idx <= 0;
                 end
                 
                 LOAD_DATA: begin
@@ -154,12 +152,12 @@ module dense_layer_compute (
                     // Index incrementing moved to next state logic for proper timing
                     
                     // Check if this was the last input for current output
-                    if (input_idx == input_size[$clog2(256)-1:0] - 1) begin
+                    if (input_idx == input_size - 1) begin
                         // Finished processing all inputs for current output
                         // Reset input index for next output and handle output completion
                         input_idx <= 0;
                         
-                        if (output_idx == output_size[$clog2(64)-1:0] - 1) begin
+                        if (output_idx == output_size - 1) begin
                             // All outputs computed
                             computation_done <= 1;
                         end
@@ -173,11 +171,9 @@ module dense_layer_compute (
                     // Output is ready for downstream module to consume
                     // Stay in this state for one cycle to allow downstream to capture
                     // Increment output_idx and addr_counter here AFTER output is captured
-                    if (output_idx < output_size[$clog2(64)-1:0] - 1) begin
+                    if (output_idx < output_size - 1) begin
                         output_idx <= output_idx + 1;
                         addr_counter <= addr_counter + 1;
-                        // Reset input_idx for next output computation
-                        input_idx <= 0;
                     end
                 end
                 
@@ -226,7 +222,7 @@ module dense_layer_compute (
                 // Enable MAC accumulation only during this state
                 mac_enable = 1;
                 
-                if (input_idx == input_size[$clog2(256)-1:0] - 1) begin
+                if (input_idx == input_size - 1) begin
                     // Finished all inputs for current output
                     next_state = OUTPUT_READY;
                 end else begin
@@ -236,7 +232,7 @@ module dense_layer_compute (
             end
             
             OUTPUT_READY: begin
-                if (output_idx == output_size[$clog2(64)-1:0] - 1) begin
+                if (output_idx == output_size - 1) begin
                     // This was the last output
                     next_state = COMPLETE;
                 end else begin

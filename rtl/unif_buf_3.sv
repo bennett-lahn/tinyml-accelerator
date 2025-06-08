@@ -249,7 +249,7 @@ module unif_buf_3 #(
                 end
                 BLOCK_READY_STATE: begin
                     if (next_spatial_block) begin
-                        $display("next_spatial_block, moving to LOADING_BLOCK");
+                        // $display("next_spatial_block, moving to LOADING_BLOCK");
                         // Move to next spatial block
                         state <= LOADING_BLOCK;
                         if (block_start_ch == 28) begin

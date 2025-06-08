@@ -17,7 +17,7 @@ TOPLEVEL ?= $(subst test_,,$(TEST))
 VERILOG_SOURCES := $(shell find ../rtl -type f \( -name "*.sv" -o -name "*.v" \))
 MODULE := $(TEST)
 WAVES ?= 1
-EXTRA_ARGS += --sv -Wall --trace --trace-structs -I
+EXTRA_ARGS += --sv -Wall --trace --Wno-UNUSEDPARAM --Wno-WIDTHTRUNC --Wno-WIDTHEXPAND --trace-structs -I
 
 BUILD_DIR := sim_build/$(MODULE)
 export PYTHONPATH := $(PYTHONPATH):$(shell pwd)

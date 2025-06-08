@@ -1,8 +1,8 @@
 module dense_weight_rom 
 #(
-  parameter DEPTH = 16384,
+  parameter DEPTH = 17024,
   parameter WIDTH = 32,
-  parameter INIT_FILE = "dense_weights.hex"
+  parameter INIT_FILE = "../fakemodel/tflite_dense_kernel_weights.hex"
 )
 (
   input logic clk

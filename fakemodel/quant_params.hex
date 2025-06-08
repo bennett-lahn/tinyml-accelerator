@@ -1,14 +1,14 @@
 // Requantize Scale ROM Data
 // Generated from TensorFlow Lite model
-// Source model: ../fakemodel/simple_cnn_32x32_quant_int8.tflite
+// Source model: simple_cnn_32x32_quant_int8.tflite
 // Format: Each line is a 38-bit value (10 hex digits)
 // [37:32] shift (6 bits), [31:0] multiplier (32 bits)
 // Total entries: 6
 // NUM_LAYERS: 6
 
-0879053480
-077fd44a80
-0540cf3a00
-055f947e00
-3f40000000
-3f40000000
+0758315b00
+065da1c080
+0560606080
+0560606080
+0560606080
+02610cdb00

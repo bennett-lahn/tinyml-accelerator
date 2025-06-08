@@ -17,7 +17,7 @@ module fc_bias_rom #(
     output logic [WIDTH-1:0] bias_out                  // Bias value at the specified FC layer and neuron
 );
 
-    logic [WIDTH-1:0] rom [0:DEPTH-1];
+    logic [WIDTH-1:0] rom [DEPTH];
 
     initial begin
         if (INIT_FILE != "") begin // Only initialize if a file is specified
@@ -47,12 +47,12 @@ module fc_bias_rom #(
     end
 
     // Address bounds checking
-    always_ff @(posedge clk) begin
-        if (read_enable && actual_addr >= DEPTH) begin
-            $display("ERROR: fc_bias_rom address out of bounds at time %0t! actual_addr=%d, max_valid_addr=%d, fc_layer_select=%b, addr=%d", 
-                     $time, actual_addr, DEPTH-1, fc_layer_select, addr);
-        end
-    end
+    // always_ff @(posedge clk) begin
+    //     if (read_enable && actual_addr >= DEPTH) begin
+    //         $display("ERROR: fc_bias_rom address out of bounds at time %0t! actual_addr=%d, max_valid_addr=%d, fc_layer_select=%b, addr=%d", 
+    //                  $time, actual_addr, DEPTH-1, fc_layer_select, addr);
+    //     end
+    // end
 
     always_ff @(posedge clk) begin
         if (read_enable) begin

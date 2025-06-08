@@ -34,10 +34,10 @@ module requantize_scale_rom #(
   // Initialization
   initial begin
         if (INIT_FILE != "") begin // Only initialize if a file is specified (using the new parameter)
-            $display("tensor_ram: Initializing ROM from file: %s", INIT_FILE);
+            $display("requantize_scale_rom: Initializing ROM from file: %s", INIT_FILE);
             $readmemh(INIT_FILE, rom);
         end else begin
-            $display("tensor_ram: No INIT_FILE specified, ROM not initialized from file by $readmemh.");
+            $display("requantize_scale_rom: No INIT_FILE specified, ROM not initialized from file by $readmemh.");
         end
     end
 

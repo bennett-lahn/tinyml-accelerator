@@ -223,7 +223,7 @@ logic [($clog2(RAM_WORD_DEPTH*(RAM_READ_WIDTH/RAM_WRITE_WIDTH)))-1:0] ram_A_addr
 
 // Instantiate tensor_ram A
 tensor_ram #(
-    .INIT_FILE("../rtl/image_data.hex")
+    .INIT_FILE("../fakemodel/test_vector_dog.hex")
 ) RAM_A (
     .clk(clk)
     ,.reset(reset)
@@ -478,11 +478,11 @@ logic all_outputs_sent; // Indicates all data has been output
 
 
 flatten_layer #(
-    .INPUT_HEIGHT(IMG_H)
-    ,.INPUT_WIDTH(IMG_W)
+    .INPUT_HEIGHT(2)
+    ,.INPUT_WIDTH(2)
     ,.INPUT_CHANNELS(MAX_NUM_CH)
     ,.CHUNK_SIZE(16) // 128 bits = 16 int8_t values
-    ,.TOTAL_CHUNKS((IMG_H * IMG_W * MAX_NUM_CH) / 16) // Total chunks based on input dimensions
+    ,.TOTAL_CHUNKS(16) // Total chunks based on input dimensions
     ,.OUTPUT_SIZE(IMG_H * IMG_W * MAX_NUM_CH) // Total output size
 ) flatten_layer (
     .clk(clk)
@@ -528,7 +528,7 @@ assign chunk_valid = flatten_stage;
     dense_fc_ram #(
         .DEPTH(256) // 256 words of 8 bits each
         ,.WIDTH(8) // 8 bits per word
-        ,.INIT_FILE("../fakemodel/tflite_dense_fc_weights.hex") // Initialization file for weights
+        ,.INIT_FILE("") // Initialization file for weights
     ) dense_fc_ram (
         .clk(clk)
         ,.reset(reset)
@@ -551,8 +551,8 @@ assign chunk_valid = flatten_stage;
 
     fc_bias_rom #(
         .WIDTH(32) // 32 bits per word
-        ,.DEPTH(72) // 72 words for the fully connected layer
-        ,.INIT_FILE("../fakemodel/tflite_fc_bias_weights.hex") // Initialization file for bias weights
+        ,.DEPTH(74) // 74 words for the fully connected layer
+        ,.INIT_FILE("../fakemodel/tflite_fc_biases.hex") // Initialization file for bias weights
         ,.FC1_SIZE(64) // Size of the first fully connected layer
         ,.FC2_SIZE(10) // Size of the second fully connected layer
     ) fc_bias_rom (
@@ -565,7 +565,7 @@ assign chunk_valid = flatten_stage;
 
 
 //======================================================================================================
-//DENSE WEIGHT ROM
+// DENSE WEIGHT ROM
 //======================================================================================================
 
     logic dense_weight_rom_read_enable;
@@ -574,8 +574,8 @@ assign chunk_valid = flatten_stage;
 
     dense_weight_rom #(
         .WIDTH(8) // 8 bits per word
-        ,.DEPTH(256*64) // 256 input channels, 64 output channels
-        ,.INIT_FILE("../fakemodel/tflite_dense_weights.hex") // Initialization file for weights
+        ,.DEPTH(17024) // 256 input channels, 64 output channels, then 64 input channels, 10 output channels
+        ,.INIT_FILE("../fakemodel/tflite_dense_kernel_weights.hex") // Initialization file for weights
     ) dense_weight_rom (
         .clk(clk)
         ,.reset(reset)
@@ -656,7 +656,6 @@ assign chunk_valid = flatten_stage;
     assign bypass_valid = output_ready;
     assign bypass_value = output_data;
     assign bypass_index = output_addr; // Assuming output_addr is used for bypass index
-
 
 //======================================================================================================
 // SOFTMAX

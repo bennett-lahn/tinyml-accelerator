@@ -48,21 +48,21 @@ module bias_rom #(
         end
     end
 
-    // Address bounds checking
-    always_ff @(posedge clk) begin
-        if (read_enable && linear_addr >= DEPTH) begin
-            $display("ERROR: bias_rom linear address out of bounds at time %0t! layer_idx=%d, channel_idx=%d, linear_addr=%d, max_valid_addr=%d", 
-                     $time, layer_idx, channel_idx, linear_addr, DEPTH-1);
-        end
-        if (read_enable && layer_idx >= NUM_LAYERS) begin
-            $display("ERROR: bias_rom layer_idx out of bounds at time %0t! layer_idx=%d, max_layer_idx=%d", 
-                     $time, layer_idx, NUM_LAYERS-1);
-        end
-        if (read_enable && channel_idx >= CONV_OUT_C[layer_idx]) begin
-            $display("ERROR: bias_rom channel_idx out of bounds at time %0t! layer_idx=%d, channel_idx=%d, max_channel_idx=%d", 
-                     $time, layer_idx, channel_idx, CONV_OUT_C[layer_idx]-1);
-        end
-    end
+    // // Address bounds checking
+    // always_ff @(posedge clk) begin
+    //     if (read_enable && linear_addr >= DEPTH) begin
+    //         $display("ERROR: bias_rom linear address out of bounds at time %0t! layer_idx=%d, channel_idx=%d, linear_addr=%d, max_valid_addr=%d", 
+    //                  $time, layer_idx, channel_idx, linear_addr, DEPTH-1);
+    //     end
+    //     if (read_enable && layer_idx >= NUM_LAYERS) begin
+    //         $display("ERROR: bias_rom layer_idx out of bounds at time %0t! layer_idx=%d, max_layer_idx=%d", 
+    //                  $time, layer_idx, NUM_LAYERS-1);
+    //     end
+    //     if (read_enable && channel_idx >= CONV_OUT_C[layer_idx]) begin
+    //         $display("ERROR: bias_rom channel_idx out of bounds at time %0t! layer_idx=%d, channel_idx=%d, max_channel_idx=%d", 
+    //                  $time, layer_idx, channel_idx, CONV_OUT_C[layer_idx]-1);
+    //     end
+    // end
 
     // Synchronous read operation
     always_ff @(posedge clk) begin

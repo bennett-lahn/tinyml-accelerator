@@ -3,7 +3,7 @@
 Generate requantize scale ROM hex file for TinyML accelerator.
 
 This script takes a TensorFlow Lite (.tflite) model as input and extracts
-quantization parameters from Conv2D layers to generate the fixed-point
+quantization parameters from Conv2D and Fully Connected layers to generate the fixed-point
 multiplier and shift format expected by the requantize_activate_unit.
 
 The ROM layout is:
@@ -76,13 +76,13 @@ def quantization_params_to_multiplier_shift(scale, zero_point=0):
 
 def parse_tflite_model(model_path):
     """
-    Parse a TensorFlow Lite model and extract Conv2D layer information.
+    Parse a TensorFlow Lite model and extract Conv2D and Fully Connected layer information.
     
     Args:
         model_path: Path to the .tflite model file
         
     Returns:
-        list: List of dictionaries containing Conv2D layer information
+        list: List of dictionaries containing Conv2D and Fully Connected layer information
     """
     if not os.path.exists(model_path):
         raise FileNotFoundError(f"Model file not found: {model_path}")
@@ -94,7 +94,7 @@ def parse_tflite_model(model_path):
     # Parse the model using tflite package
     model = tflite.Model.GetRootAsModel(model_data, 0)
     
-    conv2d_layers = []
+    layers = []
     
     # Get the first subgraph (most models have only one)
     if model.SubgraphsLength() == 0:
@@ -102,7 +102,7 @@ def parse_tflite_model(model_path):
     
     subgraph = model.Subgraphs(0)
     
-    # Iterate through operators to find Conv2D layers
+    # Iterate through operators to find Conv2D and Fully Connected layers
     for op_idx in range(subgraph.OperatorsLength()):
         operator = subgraph.Operators(op_idx)
         
@@ -110,9 +110,9 @@ def parse_tflite_model(model_path):
         op_code_idx = operator.OpcodeIndex()
         op_code = model.OperatorCodes(op_code_idx)
         
-        # Check if this is a Conv2D operation
+        # Check if this is a Conv2D or Fully Connected operation
         builtin_code = op_code.BuiltinCode()
-        if builtin_code == tflite.BuiltinOperator.CONV_2D:
+        if builtin_code == tflite.BuiltinOperator.CONV_2D or builtin_code == tflite.BuiltinOperator.FULLY_CONNECTED:
             # Get input and output tensor indices
             input_idx = operator.Inputs(0)  # Input tensor
             output_idx = operator.Outputs(0)  # Output tensor
@@ -158,8 +158,12 @@ def parse_tflite_model(model_path):
             for i in range(output_tensor.ShapeLength()):
                 output_shape.append(output_tensor.Shape(i))
             
+            # Determine layer type
+            layer_type = "Conv2D" if builtin_code == tflite.BuiltinOperator.CONV_2D else "FullyConnected"
+            
             layer_info = {
                 'layer_idx': op_idx,
+                'layer_type': layer_type,
                 'input_name': input_name,
                 'output_name': output_name,
                 'input_shape': input_shape,
@@ -168,12 +172,12 @@ def parse_tflite_model(model_path):
                 'input_zero_point': input_zero_point,
                 'output_scale': output_scale,
                 'output_zero_point': output_zero_point,
-                'output_channels': output_shape[-1] if len(output_shape) >= 3 else 1
+                'output_channels': output_shape[-1] if len(output_shape) >= 1 else 1
             }
             
-            conv2d_layers.append(layer_info)
+            layers.append(layer_info)
     
-    return conv2d_layers
+    return layers
 
 def generate_requantize_rom_hex(model_path, output_file="quant_params.hex"):
     """Generate the hex file for requantize scale ROM from a TFLite model."""
@@ -186,20 +190,23 @@ def generate_requantize_rom_hex(model_path, output_file="quant_params.hex"):
     print(f"Parsing TensorFlow Lite model: {model_path}")
     
     try:
-        conv2d_layers = parse_tflite_model(model_path)
+        layers = parse_tflite_model(model_path)
     except Exception as e:
         print(f"Error parsing TFLite model: {e}")
         return
     
-    if not conv2d_layers:
-        print("Warning: No Conv2D layers found in the model")
-        conv2d_layers = []
+    if not layers:
+        print("Warning: No Conv2D or Fully Connected layers found in the model")
+        layers = []
     
-    print(f"Found {len(conv2d_layers)} Conv2D layers")
+    # Count layer types
+    conv2d_count = sum(1 for layer in layers if layer['layer_type'] == 'Conv2D')
+    fc_count = sum(1 for layer in layers if layer['layer_type'] == 'FullyConnected')
+    print(f"Found {len(layers)} layers total: {conv2d_count} Conv2D, {fc_count} Fully Connected")
     
     # Display layer information
-    for i, layer in enumerate(conv2d_layers):
-        print(f"\nLayer {i}:")
+    for i, layer in enumerate(layers):
+        print(f"\nLayer {i} ({layer['layer_type']}):")
         print(f"  Input: {layer['input_name']} {layer['input_shape']}")
         print(f"  Output: {layer['output_name']} {layer['output_shape']}")
         print(f"  Input scale: {layer['input_scale']}, zero_point: {layer['input_zero_point']}")
@@ -212,10 +219,10 @@ def generate_requantize_rom_hex(model_path, output_file="quant_params.hex"):
     # Add layer output scales
     print(f"\nAdding layer output scale entries...")
     
-    # Process up to NUM_LAYERS Conv2D layers
+    # Process up to NUM_LAYERS (Conv2D and Fully Connected layers)
     for layer_idx in range(NUM_LAYERS):
-        if layer_idx < len(conv2d_layers):
-            layer = conv2d_layers[layer_idx]
+        if layer_idx < len(layers):
+            layer = layers[layer_idx]
             
             # Use output scale for requantization
             if layer['output_scale'] is not None and layer['output_scale'] > 0:
@@ -231,7 +238,7 @@ def generate_requantize_rom_hex(model_path, output_file="quant_params.hex"):
             entry = ((shift & 0x3F) << 32) | (mult & 0xFFFFFFFF)
             rom_data.append(entry)
             
-            print(f"  Layer {layer_idx}: {layer['output_name']}")
+            print(f"  Layer {layer_idx} ({layer['layer_type']}): {layer['output_name']}")
             print(f"    Output scale: {scale:.6e} -> mult=0x{mult:08x}, shift={shift}")
             print(f"    Output channels: {layer['output_channels']}")
         else:
@@ -263,9 +270,13 @@ def generate_requantize_rom_hex(model_path, output_file="quant_params.hex"):
     
     # Generate a summary
     print("\nROM Layout Summary:")
-    for i in range(min(NUM_LAYERS, len(conv2d_layers))):
-        layer_name = conv2d_layers[i]['output_name'] if i < len(conv2d_layers) else "default"
-        print(f"  Address {i}: Layer {i} output scale ({layer_name})")
+    for i in range(min(NUM_LAYERS, len(layers))):
+        if i < len(layers):
+            layer_name = layers[i]['output_name']
+            layer_type = layers[i]['layer_type']
+            print(f"  Address {i}: Layer {i} ({layer_type}) output scale ({layer_name})")
+        else:
+            print(f"  Address {i}: Layer {i} default scale")
 
 def main():
     parser = argparse.ArgumentParser(
