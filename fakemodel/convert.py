@@ -54,7 +54,7 @@ def image_to_hex(image_path, output_path, size=(32, 32), pixels_per_line=16):
                 # Write a header commenting the source and dimensions
                 f.write(f"# Grayscale hex data for {image_path}\n")
                 f.write(f"# Resolution: {width}x{height}\n")
-                f.write(f"# Format: Row-major, {pixels_per_line} pixels per line.\n")
+                f.write(f"# Format: Row-major, {pixels_per_line} pixels per line, no spaces.\n")
                 f.write("# Each value is an 8-bit integer in hexadecimal.\n\n")
 
                 # --- Write Grayscale Data ---
@@ -68,7 +68,8 @@ def image_to_hex(image_path, output_path, size=(32, 32), pixels_per_line=16):
                     # Split the row's hex values into chunks and write each chunk as a new line
                     for i in range(0, width, pixels_per_line):
                         chunk = full_row_hex[i:i + pixels_per_line]
-                        f.write(" ".join(chunk) + "\n")
+                        # Join without spaces to create a continuous hex string
+                        f.write("".join(chunk) + "\n")
                 
             print(f"--- Success! ---")
             print(f"Successfully converted '{image_path}' to '{absolute_output_path}'")
