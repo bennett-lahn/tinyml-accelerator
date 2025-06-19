@@ -1,5 +1,44 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// REQUANTIZE CONTROLLER
+// ======================================================================================================
+// This module manages the requantization and activation pipeline for the TinyML accelerator's systolic
+// tensor array (STA) output processing. It converts 32-bit accumulator results from the STA into
+// 8-bit quantized activations using layer-specific scaling parameters and applies ReLU6 activation.
+//
+// FUNCTIONALITY:
+// - Receives 32-bit accumulator outputs from the STA via output coordinator
+// - Buffers incoming data using array_output_buffer instances for each channel
+// - Applies layer-specific requantization using shared scale ROM parameters
+// - Performs ReLU6 activation with configurable bypass capability
+// - Outputs 8-bit quantized activations with spatial coordinates
+//
+// ARCHITECTURE:
+// - SA_N parallel channels, each with dedicated buffer and requantize/activate unit
+// - Shared scale ROM provides layer-specific quantization parameters
+// - Array output buffers handle streaming data with handshake protocol
+// - Requantize/activate units perform the actual quantization and activation
+//
+// INTEGRATION:
+// - Instantiated in sta_controller.sv between output_coordinator and maxpool_unit
+// - Receives STA outputs after bias addition and accumulation
+// - Outputs to maxpool_unit for spatial downsampling (when not bypassed)
+// - Can bypass ReLU activation for specific layers (e.g., final dense layer)
+//
+// PARAMETERS:
+// - SA_N: Number of parallel channels (systolic array columns)
+// - NUM_LAYERS: Total number of layers in the model
+// - MAX_N: Maximum matrix dimension for coordinate calculations
+// - MULT_WIDTH/SHIFT_WIDTH: Bit-widths for quantization parameters
+//
+// QUANTIZATION:
+// - Uses TFLite-compatible quantization with fixed-point multipliers
+// - Supports layer-specific zero points (normal: -128, special: -16)
+// - Implements ReLU6 clamping with configurable qmax values per layer
+// - Handles both positive and negative shift operations
+// ======================================================================================================
+
 module requantize_controller #(
   parameter int SA_N               = 4   // # of buffer/quant pairs
   ,parameter int NUM_LAYERS        = 6   // # of layers in model

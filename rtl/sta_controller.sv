@@ -1,5 +1,53 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// STA CONTROLLER
+// ======================================================================================================
+// This module orchestrates the complete systolic tensor array (STA) computation pipeline for the
+// TinyML accelerator. It manages the flow of data through the STA, requantization, and max pooling
+// stages, providing a unified interface for matrix multiplication with post-processing.
+//
+// FUNCTIONALITY:
+// - Controls 4x4 systolic tensor array for matrix multiplication
+// - Manages bias loading and accumulation across all processing elements
+// - Coordinates output collection and spatial coordinate generation
+// - Handles requantization of 32-bit accumulator results to 8-bit activations
+// - Performs 2x2 max pooling on requantized outputs
+// - Supports bypass modes for fully connected layers (skipping maxpool/relu)
+//
+// ARCHITECTURE:
+// - Systolic tensor array: 4x4 processing elements with vectorized operations
+// - Output coordinator: Manages spatial coordinates and output timing
+// - Requantize controller: Converts 32-bit results to 8-bit with activation
+// - Maxpool unit: Performs spatial downsampling on activation outputs
+// - Streaming output: Provides unified interface for downstream processing
+//
+// DATA FLOW:
+// 1. Input matrices A and B enter systolic array with bias values
+// 2. STA performs matrix multiplication with accumulation
+// 3. Output coordinator generates spatial coordinates for results
+// 4. Requantize controller converts to 8-bit with ReLU6 activation
+// 5. Maxpool unit performs 2x2 spatial downsampling
+// 6. Results output with coordinates for tensor RAM storage
+//
+// BYPASS MODES:
+// - bypass_maxpool: Skips max pooling for fully connected layers
+// - bypass_relu: Skips ReLU activation for final classification layer
+// - bypass_valid: Direct input for dense layer results
+//
+// INTEGRATION:
+// - Used in TPU_Datapath.sv as the core computation engine
+// - Receives formatted inputs from spatial_data_formatter
+// - Outputs to tensor RAM for layer-to-layer data storage
+// - Coordinates with unified buffer for spatial block processing
+//
+// PARAMETERS:
+// - MAX_N: Maximum matrix dimension for coordinate calculations
+// - MAX_NUM_CH: Maximum number of channels per layer
+// - MAX_BYPASS_IDX: Maximum index for bypass mode operations
+// - SA_N: Systolic array dimension (fixed at 4x4)
+// ======================================================================================================
+
 module sta_controller #(
   parameter int MAX_N     = 64                  // Max matrix dimension for output_coordinator
   ,parameter int N_BITS = $clog2(MAX_N)

@@ -1,5 +1,57 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// SYSTOLIC TENSOR ARRAY
+// ======================================================================================================
+// This module implements a 4x4 systolic tensor array for MACs
+// in the TinyML accelerator. It performs vectorized dot products with accumulation and bias loading.
+//
+// FUNCTIONALITY:
+// - Performs 4x4 matrix multiplication with vectorized operations (4 elements per cycle)
+// - Supports bias loading and accumulation for each processing element
+// - Implements systolic data flow with configurable tile boundaries
+// - Provides stall capability for flow control and pipeline management
+// - Generates 32-bit accumulator outputs for each processing element
+//
+// ARCHITECTURE:
+// - 4x4 grid of tensor processing elements (PEs)
+// - Systolic data flow: A matrix flows left-to-right, B matrix flows top-to-bottom
+// - Vectorized operations: Each PE processes 4 elements simultaneously
+// - Configurable tile boundaries for pipelining optimization
+// - Per-PE bias loading and accumulation control
+//
+// DATA FLOW:
+// - A matrix inputs: 4-wide int8 vectors per row (left edge)
+// - B matrix inputs: 4-wide int8 vectors per column (top edge)
+// - Data propagates through array with systolic timing
+// - Each PE computes dot product + accumulation + bias
+// - Outputs: 32-bit accumulator values for each PE position
+//
+// PROCESSING ELEMENTS:
+// - Each PE performs 4-element dot product per cycle
+// - Accumulates results over multiple cycles
+// - Supports bias loading to initialize accumulator
+// - Stall capability for flow control
+// - Idle detection for power management
+//
+// TILING:
+// - Configurable tile boundaries for pipelining
+// - Register placement at tile boundaries
+// - Wire connections within tiles for reduced latency
+// - Supports different tile sizes (1x1, 2x2, 4x4)
+//
+// INTEGRATION:
+// - Used by sta_controller as the core computation engine
+// - Receives formatted inputs from spatial data formatter
+// - Outputs to output_coordinator for result collection
+// - Coordinates with requantization pipeline for post-processing
+//
+// PARAMETERS:
+// - N: Array dimension (fixed at 4x4)
+// - TILE_SIZE: Tile boundary configuration for pipelining
+// - VECTOR_WIDTH: Number of elements processed per cycle (fixed at 4)
+// ======================================================================================================
+
 module systolic_tensor_array (
     input   logic    clk             // System clock, rising-edge
     ,input  logic    reset           // Active-high synchronous reset

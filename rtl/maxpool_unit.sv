@@ -1,5 +1,36 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// MAXPOOL UNIT
+// ======================================================================================================
+// This module implements a 2D max pooling operation for the TinyML accelerator's systolic tensor array
+// (STA) output processing pipeline. It performs spatial downsampling by finding the maximum value
+// within each pooling window (default 2x2) and outputs the result with corresponding coordinates.
+//
+// FUNCTIONALITY:
+// - Collects quantized activation outputs from the STA via the requantize controller
+// - Stores incoming values in an SA_N x SA_N scratch buffer with valid flags
+// - Scans for complete 2x2 (or configurable HxW) blocks that are ready for pooling
+// - Performs max pooling on complete blocks and outputs the maximum value with coordinates
+// - Clears processed blocks from the valid map to prevent reprocessing
+//
+// INTEGRATION:
+// - Instantiated in sta_controller.sv as part of the STA output processing pipeline
+// - Receives inputs from requantize_controller after STA computation and requantization
+// - Outputs to the main TPU datapath for storage in tensor RAM
+// - Can be bypassed for fully connected layers (layer_idx > 3) via bypass_maxpool signal
+//
+// PARAMETERS:
+// - SA_N: Systolic array dimension (number of columns/requant units)
+// - MAX_N: Maximum matrix dimension for coordinate calculations
+// - FILTER_H/W: Pooling window dimensions (default 2x2)
+//
+// TIMING:
+// - Operates on streaming data as it becomes available from the STA
+// - Outputs pooled results as soon as complete blocks are detected
+// - Maintains spatial ordering of output coordinates relative to input tile position
+// ======================================================================================================
+
 module maxpool_unit #(
   parameter  int SA_N          = 4               // Scratch array dimension; same as columns of STA, # of requant units
   ,parameter int MAX_N         = 64              // Max matrix dimension calculated
