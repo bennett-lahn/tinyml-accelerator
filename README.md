@@ -61,10 +61,12 @@ To run this project, you need:
   pip install cocotb
   ```
 - **Icarus Verilog** or **Verilator**: SystemVerilog simulator (we only tested with Verilator and highly recommend using Verilator alongside the included Makefile)
+  For Iccarus Verilog:
   ```bash
-  # For Ubuntu/Debian
   sudo apt-get install iverilog
-  # Or for Verilator
+  ```
+  For Verilator:
+  ```bash
   sudo apt-get install verilator
   ```
 - **Make**: Build system
