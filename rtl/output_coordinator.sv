@@ -1,5 +1,55 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// OUTPUT COORDINATOR
+// ======================================================================================================
+// This module manages the output timing and spatial coordinate generation for the systolic tensor
+// array (STA) in the TinyML accelerator. It ensures proper synchronization between STA completion
+// and output generation, providing spatial coordinates for downstream processing.
+//
+// FUNCTIONALITY:
+// - Waits for STA completion and idle signals before generating outputs
+// - Generates spatial coordinates for each processing element output
+// - Provides timing control for output validity and data collection
+// - Manages state transitions between computation and output phases
+// - Ensures proper synchronization with upstream and downstream modules
+//
+// OPERATION:
+// - Monitors 'done' signal from layer controller and 'sta_idle' from systolic array
+// - When both signals are asserted, generates output valid signals for one cycle
+// - Calculates absolute spatial coordinates based on block position and PE location
+// - Provides flat array outputs for easy interfacing with downstream modules
+//
+// COORDINATE GENERATION:
+// - Uses base position (pos_row, pos_col) from controller
+// - Adds PE-specific offsets to generate absolute coordinates
+// - Outputs coordinates for each PE in the array (ROWS*COLS total)
+// - Maintains spatial ordering for downstream processing
+//
+// TIMING CONTROL:
+// - Single-cycle output valid pulse when conditions are met
+// - Prevents reading stale data without proper reset
+// - Idle signal indicates coordinator is ready for next computation
+// - Stall capability for flow control integration
+//
+// INTEGRATION:
+// - Used by sta_controller to manage STA output timing
+// - Receives control signals from layer controller and STA
+// - Outputs to requantize_controller for post-processing
+// - Coordinates with tensor RAM for spatial data storage
+//
+// PARAMETERS:
+// - ROWS: Number of PE rows (typically 4)
+// - COLS: Number of PE columns (typically 4)
+// - MAX_N: Maximum matrix dimension for coordinate calculations
+// - N_BITS: Bit-width for coordinate representation
+//
+// STATE MACHINE:
+// - IDLE: Waiting for computation completion
+// - OUTPUT_VALID: Generating outputs for one cycle
+// - READ_ARRAY: Prevents stale data reads
+// ======================================================================================================
+
 module output_coordinator #(
   parameter int ROWS    = 4                 // # of PE rows
   ,parameter int COLS    = 4                // # of PE columns

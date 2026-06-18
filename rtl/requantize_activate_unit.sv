@@ -1,5 +1,39 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// REQUANTIZE ACTIVATE UNIT
+// ======================================================================================================
+// This module performs the core requantization and activation operations for a single channel in the
+// TinyML accelerator. It converts 32-bit accumulator results to 8-bit quantized activations using
+// TFLite-compatible quantization and applies ReLU6 activation with configurable clamping.
+//
+// FUNCTIONALITY:
+// - Multiplies 32-bit accumulator by layer-specific fixed-point multiplier
+// - Applies rounding and shifting according to TFLite quantization algorithm
+// - Adds output zero-point (normal: -128, special: -16 for final dense layer)
+// - Performs ReLU6 activation with configurable qmax clamping
+// - Supports ReLU bypass for layers that don't require activation
+//
+// QUANTIZATION ALGORITHM:
+// - Implements TFLite's MultiplyByQuantizedMultiplier function
+// - Uses 64-bit intermediate product for precision
+// - Applies rounding to nearest with tie-breaking to +∞
+// - Supports both positive and negative shift operations
+// - Handles Q31 format alignment with 31-bit right shift
+//
+// ACTIVATION:
+// - ReLU6: Clamps output to [zero_point, qmax_in] range
+// - Bypass mode: Clamps to full int8 range [-128, 127]
+// - Layer-specific qmax values for ReLU6 (layers 3, 4 use special values)
+// - Zero-point selection based on layer type (normal vs special)
+//
+// IMPLEMENTATION NOTES:
+// - Hardware-friendly adaptation of TFLite algorithm (may have minor precision differences)
+// - Single-cycle implementation (may need pipelining for high-frequency designs)
+// - Combines multiply, shift, and activation in one combinational block
+// - Designed for quantization-aware training compensation
+// ======================================================================================================
+
 // This module does not perfectly implement TFlite's requantization algorithm, but a more hardware friendly adaptation
 // May will result in minor errors that can be compensated for with quantization aware training (or ignored)
 // This module likely needs to be pipelined; multiply+shift+shift+shift is a lot for one cycle

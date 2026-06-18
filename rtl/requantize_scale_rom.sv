@@ -1,3 +1,41 @@
+// ======================================================================================================
+// REQUANTIZE SCALE ROM
+// ======================================================================================================
+// This module provides layer-specific quantization parameters (multiplier and shift values) for the
+// requantization process in the TinyML accelerator. It stores pre-computed scaling factors that
+// convert between the internal 32-bit accumulator format and the 8-bit quantized output format.
+//
+// FUNCTIONALITY:
+// - Stores quantization parameters for each layer in the model
+// - Provides synchronous read access to multiplier and shift values
+// - Supports initialization from external hex file
+// - Includes bounds checking for layer index validation
+// - Outputs concatenated multiplier and shift values per layer
+//
+// QUANTIZATION PARAMETERS:
+// - Multiplier: Fixed-point scaling factor for requantization
+// - Shift: Right/left shift amount for final scaling adjustment
+// - Parameters are layer-specific and derived from TFLite model quantization
+// - Stored as concatenated {shift, multiplier} in ROM
+//
+// INTEGRATION:
+// - Used by requantize_controller to provide scaling parameters
+// - Shared across all SA_N channels in the requantization pipeline
+// - Parameters are loaded from quant_params.hex file during initialization
+// - Supports NUM_LAYERS different layer configurations
+//
+// PARAMETERS:
+// - NUM_LAYERS: Total number of layers requiring quantization parameters
+// - MULT_WIDTH: Bit-width of the multiplier (default: 32)
+// - SHIFT_WIDTH: Bit-width of the shift value (default: 6)
+// - INIT_FILE: Path to hex file containing quantization parameters
+//
+// TIMING:
+// - Synchronous read with clock edge
+// - Valid signal controls read operations
+// - Outputs are registered and stable for one clock cycle
+// ======================================================================================================
+
 module requantize_scale_rom #(
   parameter int NUM_LAYERS = 6
   ,parameter int MULT_WIDTH = 32                                 // Width of multiplier for quantizing

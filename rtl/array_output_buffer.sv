@@ -1,5 +1,46 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// ARRAY OUTPUT BUFFER
+// ======================================================================================================
+// This module implements a multi-port FIFO buffer for the TinyML accelerator's requantization pipeline.
+// It buffers 32-bit accumulator outputs from the systolic tensor array (STA) before they are processed
+// by the requantize/activate units, providing flow control and data synchronization.
+//
+// FUNCTIONALITY:
+// - Accepts multiple parallel write ports from STA output coordinator
+// - Stores unquantized 32-bit values with their spatial coordinates (row, col)
+// - Provides single read port with handshake protocol for downstream processing
+// - Implements FIFO behavior with configurable buffer depth
+// - Maintains spatial ordering of data through the pipeline
+//
+// ARCHITECTURE:
+// - Circular buffer implementation with read/write pointers
+// - Multi-port write interface supporting simultaneous writes
+// - Single read port with consume handshake
+// - Entry structure includes value, coordinates, and valid flag
+// - Configurable buffer depth (default: 4 entries)
+//
+// INTEGRATION:
+// - Used by requantize_controller to buffer STA outputs
+// - One instance per SA_N channel in the requantization pipeline
+// - Receives data from output_coordinator after STA computation
+// - Outputs to requantize_activate_unit for quantization processing
+//
+// PARAMETERS:
+// - MAX_N: Maximum matrix dimension for coordinate bit-width
+// - NUM_WRITE_PORTS: Number of parallel write ports (default: 4)
+// - MAX_BUFFER_ENTRIES: Buffer depth (default: 4 entries)
+// - N_BITS: Bit-width for row/column coordinates
+//
+// TIMING:
+// - Synchronous operation with clock edge
+// - Write operations occur when valid inputs are present and space available
+// - Read operations controlled by out_consume handshake
+// - Idle signal indicates buffer is empty with no pending writes
+// - Assumes reads and writes do not overlap in time
+// ======================================================================================================
+
 module array_output_buffer #(
   parameter int MAX_N  = 512
   ,parameter int N_BITS = $clog2(MAX_N)

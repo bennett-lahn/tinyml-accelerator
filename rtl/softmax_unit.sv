@@ -1,5 +1,53 @@
 `include "sys_types.svh"
 
+// ======================================================================================================
+// SOFTMAX UNIT
+// ======================================================================================================
+// This module implements a hardware-optimized softmax function for the TinyML accelerator's final
+// classification layer. It converts logits from the dense layer into probability distributions
+// using a pipelined state machine and lookup table-based exponential approximation.
+//
+// FUNCTIONALITY:
+// - Implements softmax(z_i) = 2^(β * z_i) / Σ(2^(β * z_j)) for j=1 to N
+// - Processes NUM_CLASSES logits (default: 10 for 10-class classification)
+// - Uses 2^x LUT approximation instead of exp(x) "for hardware efficiency" (exp should be better but didn't work in testing)
+// - Applies numerical stability by subtracting maximum logit before exponential
+// - Outputs Q1.31 fixed-point probabilities with 32-bit precision
+//
+// ALGORITHM STEPS:
+// 1. FIND_MAX: Find maximum logit for numerical stability
+// 2. COMPUTE_SHIFTED: Subtract max from all logits (shifted_logits[i] = logits[i] - max)
+// 3. COMPUTE_EXP: Compute 2^(shifted_logits[i]) using LUT lookup
+// 4. COMPUTE_SUM: Sum all exponential values
+// 5. COMPUTE_SOFTMAX: Divide each exponential by sum to get probabilities
+// 6. DONE: Output valid probabilities
+//
+// HARDWARE OPTIMIZATIONS:
+// - 256-entry 2^x LUT replaces expensive exp(x) computation
+// - Fixed-point arithmetic with Q1.31 output format
+// - Temperature parameter β fixed at 1 within the modelfor simplicity
+//
+// INTEGRATION:
+// - Used in TPU_Datapath.sv for final classification layer
+// - Receives logits from dense layer computation
+// - Outputs probabilities to top-level interface
+// - Triggered by softmax_start signal from controller
+//
+// PARAMETERS:
+// - NUM_CLASSES: Number of classification classes (default: 10)
+// - OUTPUT_WIDTH: Bit-width of output probabilities (default: 32, Q1.31)
+// - EXP_LUT_ADDR_WIDTH: LUT address width (default: 8, 256 entries)
+// - EXP_LUT_WIDTH: LUT data width (default: 32 bits)
+// - BETA: Temperature parameter (default: 1)
+// - INIT_FILE: Path to LUT initialization file
+//
+// NUMERICAL CONSIDERATIONS:
+// - Subtracts maximum logit for numerical stability
+// - Clamps shifted logits to [-128, 0] range for LUT compatibility
+// - Uses 36-bit accumulator for sum to prevent overflow
+// - Q1.31 output format provides good precision for probabilities
+// ======================================================================================================
+
 // Softmax Acceleration Unit for TinyML CNN Classification
 // Implements: softmax(z_i) = 2^(β * z_i) / Σ(2^(β * z_j)) for j=1 to N
 // For 10-class classification with β = 1
@@ -12,12 +60,12 @@ module softmax_unit #(
    ,parameter int BETA = 1              // Temperature parameter (fixed at 1)
    ,parameter string INIT_FILE = "../rtl/exp_lut.hex"
 )(
-   input  logic clk,
-   input  logic reset,
-   input  logic start,                 // Start softmax computation
-   input  int8_t logits [NUM_CLASSES], // Input logits array (int8: -128 to +127)
-   output logic signed [OUTPUT_WIDTH-1:0] probabilities [NUM_CLASSES], // Output probabilities (Q1.31)
-   output logic valid                 // Output valid signal
+   input  logic clk
+   ,input  logic reset
+   ,input  logic start                 // Start softmax computation
+   ,input  int8_t logits [NUM_CLASSES] // Input logits array (int8: -128 to +127)
+   ,output logic signed [OUTPUT_WIDTH-1:0] probabilities [NUM_CLASSES] // Output probabilities (Q1.31)
+   ,output logic valid                 // Output valid signal
 );
 
    // State machine for pipelined softmax computation
